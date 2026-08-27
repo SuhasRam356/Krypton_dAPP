@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
-import type { KryptonMessage } from '@/types';
+import type { KryptonMessage, InnerEnvelope } from '@/types';
 import { encryptForContact, encryptWithPFS } from '@/crypto/encryption';
 import { fromHex } from '@/crypto/keys';
 import { useKryptonStore } from '@/store/useKryptonStore';
@@ -109,9 +109,24 @@ export default function ChatWindow() {
     let ciphertext = "";
     let ratchetIndex: number | undefined = undefined;
 
+    const msgId = crypto.randomUUID();
+    // eslint-disable-next-line react-hooks/purity
+    const msgTimestamp = Date.now();
+
+    const innerEnvelope: InnerEnvelope = {
+      type: 'ONION_ROUTED',
+      id: msgId,
+      sender: keys.kryptonId,
+      recipient: activeContact.id,
+      timestamp: msgTimestamp,
+      payload: userText,
+      ...(isCryptoTransfer && { isCryptoTransfer, transferAmount: amount, transferSymbol: symbol }),
+      ...(selfDestructTTL && { selfDestructTTL })
+    };
+
     if (activeContact.isAi) {
       ciphertext = await encryptForContact(
-        userText,
+        innerEnvelope,
         keys.messagingPrivateKey,
         targetPubKey
       );
@@ -127,9 +142,11 @@ export default function ChatWindow() {
         return;
       }
 
-      const result = await encryptWithPFS(userText, pair.send);
+      ratchetIndex = pair.send.messageIndex;
+      innerEnvelope.ratchetIndex = ratchetIndex;
+
+      const result = await encryptWithPFS(innerEnvelope, pair.send);
       ciphertext = result.ciphertext;
-      ratchetIndex = result.ratchetIndex;
 
       // Only the send chain advances here — recv chain (for their incoming messages)
       // is untouched, so decrypting their traffic is never affected by our own sends.
@@ -139,9 +156,8 @@ export default function ChatWindow() {
     }
 
     const newMsg: KryptonMessage = {
-      id: crypto.randomUUID(),
-      // eslint-disable-next-line react-hooks/purity
-      timestamp: Date.now(),
+      id: msgId,
+      timestamp: msgTimestamp,
       sender: keys.kryptonId, 
       recipient: activeContact.id,
       type: 'ONION_ROUTED',
@@ -171,16 +187,28 @@ export default function ChatWindow() {
         
         if (response.ok) {
           const data = await response.json();
+          const aiMsgId = crypto.randomUUID();
+          // eslint-disable-next-line react-hooks/purity
+          const aiTimestamp = Date.now() + 1000;
+          
+          const aiInner: InnerEnvelope = {
+            type: 'ONION_ROUTED',
+            id: aiMsgId,
+            sender: activeContact.id,
+            recipient: keys.kryptonId,
+            timestamp: aiTimestamp,
+            payload: data.result
+          };
+
           const aiCiphertext = await encryptForContact(
-            data.result,
+            aiInner,
             keys.messagingPrivateKey, // Mock signing
             keys.messagingPublicKey
           );
           
           const aiMsg: KryptonMessage = {
-            id: crypto.randomUUID(),
-            // eslint-disable-next-line react-hooks/purity
-            timestamp: Date.now() + 1000,
+            id: aiMsgId,
+            timestamp: aiTimestamp,
             sender: activeContact.id, 
             recipient: keys.kryptonId,
             type: 'ONION_ROUTED',

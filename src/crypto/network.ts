@@ -1,6 +1,5 @@
 import Gun from 'gun';
 import type { PeerEvent } from '@/store/dashboardStats';
-import type { ControlMessage } from '@/types';
 
 // TODO: replace with your self-hosted relay (radisk: true) as PEERS[0] for store-and-forward.
 // e.g. 'https://your-relay.onrender.com/gun'
@@ -78,8 +77,7 @@ let activeInboxNode: any = null;
  */
 export const subscribeToInbox = (
   kryptonId: string,
-  onMessageReceived: (message: Record<string, unknown>) => void,
-  onControlMessage?: (ctrl: ControlMessage) => void
+  onMessageReceived: (message: Record<string, unknown>) => void
 ) => {
   const gun = getGun();
 
@@ -88,6 +86,7 @@ export const subscribeToInbox = (
     activeInboxNode = null;
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const inboxNode: any = gun.get(`krypton_inbox_${kryptonId}`);
   activeInboxNode = inboxNode;
 
@@ -95,12 +94,7 @@ export const subscribeToInbox = (
     if (data && data.payloadStr) {
       try {
         const msg = JSON.parse(data.payloadStr);
-        // Route control messages separately
-        if (msg.type === 'UNSEND' && onControlMessage) {
-          onControlMessage(msg as ControlMessage);
-        } else {
-          onMessageReceived(msg);
-        }
+        onMessageReceived(msg);
       } catch (e) {
         console.error("Failed to parse incoming Gun.js message", e);
       }
@@ -117,6 +111,7 @@ export const subscribeToInbox = (
  */
 export const sendToNetwork = (recipientKryptonId: string, encryptedPayload: Record<string, unknown>): boolean => {
   const gun = getGun();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const inboxNode: any = gun.get(`krypton_inbox_${recipientKryptonId}`);
 
   // Gun.js does not support nested arrays natively. We must stringify the payload.
@@ -124,18 +119,5 @@ export const sendToNetwork = (recipientKryptonId: string, encryptedPayload: Reco
   return _isRelayConnected;
 };
 
-/**
- * Send an "unsend" control message to a recipient, telling them to tombstone a message.
- */
-export const sendUnsendSignal = (recipientKryptonId: string, messageId: string, senderKryptonId: string) => {
-  const ctrl: ControlMessage = {
-    type: 'UNSEND',
-    messageId,
-    sender: senderKryptonId,
-    timestamp: Date.now()
-  };
-  const gun = getGun();
-  const inboxNode: any = gun.get(`krypton_inbox_${recipientKryptonId}`);
-  inboxNode.set({ payloadStr: JSON.stringify(ctrl) });
-};
+
 

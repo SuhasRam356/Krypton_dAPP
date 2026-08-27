@@ -11,6 +11,30 @@ export interface Contact {
   linkedWallet?: string; // Optional ETH address, only used for in-chat crypto transfers.
 }
 
+// ── Encrypted Envelopes ──
+
+export interface InnerEnvelope {
+  type: 'ONION_ROUTED' | 'UNSEND';
+  id: string;                // Message ID
+  sender: string;            // Sender Krypton ID
+  recipient: string;         // Recipient Krypton ID
+  timestamp: number;
+  payload: string;           // Message text or target messageId (for UNSEND)
+  ratchetIndex?: number;
+  isCryptoTransfer?: boolean;
+  transferAmount?: number;
+  transferSymbol?: string;
+  selfDestructTTL?: number;
+}
+
+export interface OuterEnvelope {
+  sender: string;            // Used to lookup the correct ratchet
+  recipient: string;         // Gun routing handles this, but explicit is fine
+  encryptedPayload: string;  // The encrypted JSON of the InnerEnvelope
+  ratchetIndex?: number;     // Needed to decrypt if using ratchet
+}
+
+
 export type BaseMessage = {
   id: string;
   timestamp: number;

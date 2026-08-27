@@ -1,10 +1,10 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { generateKryptonIdentity, fromHex, KryptonKeys } from '@/crypto/keys';
-import { sendToNetwork, subscribeToInbox, sendUnsendSignal, onConnectivityChange } from '@/crypto/network';
+import { sendToNetwork, subscribeToInbox, onConnectivityChange } from '@/crypto/network';
 import { encryptVault, decryptVault, getVaultKey } from '@/crypto/vault';
-import { initContactRatchet, decryptWithPFS, decryptFromContact, type RatchetState } from '@/crypto/encryption';
-import type { KryptonMessage, WalletState, Contact, ControlMessage } from '@/types';
+import { initContactRatchet, decryptWithPFS, decryptFromContact, encryptWithPFS, encryptForContact, type RatchetState } from '@/crypto/encryption';
+import type { KryptonMessage, WalletState, Contact, InnerEnvelope } from '@/types';
 
 const AI_CONTACT_ID = '05_AI_KRYPTON_ASSISTANT';
 
@@ -135,8 +135,8 @@ export const useKryptonStore = create<KryptonStore>()(
       })),
 
       // ── Unsend a message (both sides) ──
-      unsendMessage: (id: string) => {
-        const { messages, keys } = get();
+      unsendMessage: async (id: string) => {
+        const { messages, keys, ratchetStates } = get();
         const msg = messages.find(m => m.id === id);
         if (!msg || !keys) return;
 
@@ -152,9 +152,42 @@ export const useKryptonStore = create<KryptonStore>()(
           ) as KryptonMessage[]
         }));
 
-        // Broadcast unsend signal to the recipient
+        // Broadcast unsend signal to the recipient securely
         if (msg.recipient !== AI_CONTACT_ID) {
-          sendUnsendSignal(msg.recipient, id, keys.kryptonId);
+          const innerEnv: InnerEnvelope = {
+            type: 'UNSEND',
+            id: id,
+            sender: keys.kryptonId,
+            recipient: msg.recipient,
+            timestamp: Date.now(),
+            payload: id // payload is target message id
+          };
+
+          let ciphertext = "";
+          let ratchetIndex: number | undefined = undefined;
+          
+          const pair = ratchetStates[msg.recipient];
+          if (pair) {
+            ratchetIndex = pair.send.messageIndex;
+            innerEnv.ratchetIndex = ratchetIndex;
+            const result = await encryptWithPFS(innerEnv, pair.send);
+            ciphertext = result.ciphertext;
+            set(s => ({
+              ratchetStates: { ...s.ratchetStates, [msg.recipient]: { ...pair!, send: result.newState } }
+            }));
+          } else {
+            const targetPubKey = fromHex(msg.recipient);
+            ciphertext = await encryptForContact(innerEnv, keys.messagingPrivateKey, targetPubKey);
+          }
+
+          const wireMsg = {
+            sender: keys.kryptonId,
+            recipient: msg.recipient,
+            encryptedPayload: ciphertext,
+            ratchetIndex
+          };
+          
+          sendToNetwork(msg.recipient, { ...wireMsg, isNetworkRelayed: true });
         }
       },
 
@@ -195,19 +228,6 @@ export const useKryptonStore = create<KryptonStore>()(
           }
         });
 
-        // Handle incoming control messages (unsend signals)
-        const handleControlMessage = (ctrl: ControlMessage) => {
-          if (ctrl.type === 'UNSEND') {
-            set((state) => ({
-              messages: state.messages.map(m =>
-                m.id === ctrl.messageId && m.sender === ctrl.sender
-                  ? { ...m, isDeleted: true, deletedAt: ctrl.timestamp, decryptedPayload: undefined } as unknown as KryptonMessage
-                  : m
-              ) as KryptonMessage[]
-            }));
-          }
-        };
-
         subscribeToInbox(keys.kryptonId, async (rawMsg: Record<string, unknown>) => {
           const incomingMsg = rawMsg as {
             id?: string;
@@ -223,12 +243,12 @@ export const useKryptonStore = create<KryptonStore>()(
             selfDestructTTL?: number;
           };
 
-          if (incomingMsg && incomingMsg.id && incomingMsg.sender && incomingMsg.encryptedPayload) {
+          if (incomingMsg && incomingMsg.sender && incomingMsg.encryptedPayload) {
             const { contacts, keys, addMessage, addContact } = get();
             if (!keys) return;
 
             const senderContact = contacts.find(c => c.id === incomingMsg.sender);
-            let decryptedPayload = undefined;
+            let inner: InnerEnvelope | undefined = undefined;
 
             try {
               // The Krypton ID IS the sender's public key — decode it directly
@@ -244,13 +264,13 @@ export const useKryptonStore = create<KryptonStore>()(
                   pair.recv,
                   incomingMsg.ratchetIndex
                 );
-                decryptedPayload = plaintext;
+                inner = plaintext;
                 // Only the recv chain advances here — send chain is untouched, so our own
                 // outgoing counter is never disturbed by incoming traffic.
                 set(s => ({ ratchetStates: { ...s.ratchetStates, [incomingMsg.sender as string]: { ...pair, recv: newState } } }));
               } else {
                 // Fallback for non-ratcheted messages
-                decryptedPayload = await decryptFromContact(
+                inner = await decryptFromContact(
                   incomingMsg.encryptedPayload,
                   keys.messagingPrivateKey,
                   senderPubKey
@@ -258,7 +278,18 @@ export const useKryptonStore = create<KryptonStore>()(
               }
             } catch (err) {
               console.error("Decryption error:", err);
-              decryptedPayload = "⚠️ [Decryption Failed]";
+              // Dropping forged or corrupt envelopes
+              return;
+            }
+
+            if (!inner || inner.sender !== incomingMsg.sender) {
+              console.warn("Message dropped: Sender spoofing detected. Inner sender does not match outer routing sender.");
+              return;
+            }
+
+            if (inner.recipient !== keys.kryptonId) {
+              console.warn("Message dropped: Envelope recipient mismatch.");
+              return;
             }
 
             if (!senderContact) {
@@ -266,31 +297,43 @@ export const useKryptonStore = create<KryptonStore>()(
               // contact is immediately correct and never needs manual repair.
               const colors = ['#58a6ff', '#3fb950', '#d2a8ff', '#ff7b72', '#f2cc60'];
               addContact({
-                id: incomingMsg.sender,
-                name: `${incomingMsg.sender.slice(0, 8)}...`,
+                id: inner.sender,
+                name: `${inner.sender.slice(0, 8)}...`,
                 avatarColor: colors[Math.floor(Math.random() * colors.length)] as string
               });
             }
 
+            if (inner.type === 'UNSEND') {
+              // Handle authenticated unsend control signal
+              set((state) => ({
+                messages: state.messages.map(m =>
+                  m.id === inner!.payload && m.sender === inner!.sender
+                    ? { ...m, isDeleted: true, deletedAt: inner!.timestamp, decryptedPayload: undefined } as unknown as KryptonMessage
+                    : m
+                ) as KryptonMessage[]
+              }));
+              return;
+            }
+
             const msg: KryptonMessage = {
-              id: incomingMsg.id as string,
-              timestamp: incomingMsg.timestamp || Date.now(),
-              sender: incomingMsg.sender as string,
-              recipient: incomingMsg.recipient as string,
-              type: incomingMsg.type || 'ONION_ROUTED',
+              id: inner.id,
+              timestamp: inner.timestamp,
+              sender: inner.sender,
+              recipient: inner.recipient,
+              type: inner.type,
               encryptedPayload: incomingMsg.encryptedPayload as string,
-              ...(incomingMsg.isCryptoTransfer && { isCryptoTransfer: true, transferAmount: incomingMsg.transferAmount, transferSymbol: incomingMsg.transferSymbol }),
-              ...(incomingMsg.ratchetIndex !== undefined && { ratchetIndex: incomingMsg.ratchetIndex }),
-              ...(incomingMsg.selfDestructTTL && { selfDestructTTL: incomingMsg.selfDestructTTL }),
+              ...(inner.isCryptoTransfer && { isCryptoTransfer: true, transferAmount: inner.transferAmount, transferSymbol: inner.transferSymbol }),
+              ...(inner.ratchetIndex !== undefined && { ratchetIndex: inner.ratchetIndex }),
+              ...(inner.selfDestructTTL && { selfDestructTTL: inner.selfDestructTTL }),
               isNetworkRelayed: true,
               metadataStripped: true,
               routePath: ['p2p-relay'],
-              decryptedPayload,
+              decryptedPayload: inner.payload,
             };
 
             addMessage(msg);
           }
-        }, handleControlMessage);
+        });
       },
 
       contacts: [

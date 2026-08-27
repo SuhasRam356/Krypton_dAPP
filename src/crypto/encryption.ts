@@ -1,19 +1,20 @@
 import sodium from 'libsodium-wrappers';
 import nacl from 'tweetnacl';
+import type { InnerEnvelope } from '@/types';
 
 /**
  * Encrypts a payload for a specific recipient using their public key.
  * This mimics Session's robust Libsodium/NaCl payload encryption for onion routing.
  */
 export async function encryptForContact(
-  payload: string,
+  envelope: InnerEnvelope,
   senderPrivateKey: Uint8Array,
   recipientPublicKey: Uint8Array
 ): Promise<string> {
   await sodium.ready;
   
-  // Convert payload to bytes
-  const messageBytes = sodium.from_string(payload);
+  // Convert envelope to bytes
+  const messageBytes = sodium.from_string(JSON.stringify(envelope));
   
   // Generate a random nonce
   const nonce = sodium.randombytes_buf(sodium.crypto_box_NONCEBYTES);
@@ -41,7 +42,7 @@ export async function decryptFromContact(
   encryptedPayloadBase64: string,
   recipientPrivateKey: Uint8Array,
   senderPublicKey: Uint8Array
-): Promise<string> {
+): Promise<InnerEnvelope> {
   await sodium.ready;
   
   const combined = sodium.from_base64(encryptedPayloadBase64);
@@ -55,7 +56,8 @@ export async function decryptFromContact(
     recipientPrivateKey
   );
   
-  return sodium.to_string(decryptedBytes);
+  const decryptedJson = sodium.to_string(decryptedBytes);
+  return JSON.parse(decryptedJson) as InnerEnvelope;
 }
 
 /**
@@ -97,10 +99,10 @@ export async function initContactRatchet(
  * Returns the ciphertext, updated ratchet state, and ratchet index.
  */
 export async function encryptWithPFS(
-  payload: string,
+  envelope: InnerEnvelope,
   ratchetState: RatchetState
 ): Promise<{ ciphertext: string; newState: RatchetState; ratchetIndex: number }> {
-  const { ciphertext, newState, messageIndex } = await encryptWithRatchet(payload, ratchetState);
+  const { ciphertext, newState, messageIndex } = await encryptWithRatchet(JSON.stringify(envelope), ratchetState);
   return { ciphertext, newState, ratchetIndex: messageIndex };
 }
 
@@ -111,6 +113,7 @@ export async function decryptWithPFS(
   ciphertextBase64: string,
   ratchetState: RatchetState,
   ratchetIndex: number
-): Promise<{ plaintext: string; newState: RatchetState }> {
-  return decryptWithRatchet(ciphertextBase64, ratchetState, ratchetIndex);
+): Promise<{ plaintext: InnerEnvelope; newState: RatchetState }> {
+  const { plaintext: decryptedStr, newState } = await decryptWithRatchet(ciphertextBase64, ratchetState, ratchetIndex);
+  return { plaintext: JSON.parse(decryptedStr) as InnerEnvelope, newState };
 }
