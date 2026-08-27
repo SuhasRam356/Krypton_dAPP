@@ -7,17 +7,41 @@ import { encryptForContact } from '@/crypto/encryption';
 import { fromHex } from '@/crypto/keys';
 import { useKryptonStore } from '@/store/useKryptonStore';
 
+// ── Self-destruct timer options ──
+const DESTRUCT_OPTIONS: { label: string; value: number | null }[] = [
+  { label: 'Off', value: null },
+  { label: '30s', value: 30 },
+  { label: '1 min', value: 60 },
+  { label: '5 min', value: 300 },
+  { label: '1 hour', value: 3600 },
+];
+
 export default function ChatWindow() {
   const searchParams = useSearchParams();
   const initialContactId = searchParams.get('contactId');
   
-  const { messages, addMessage, keys, generateKeys, contacts } = useKryptonStore();
+  const {
+    messages, addMessage, deleteMessage, unsendMessage,
+    keys, generateKeys, contacts,
+    selfDestructTTL, setSelfDestructTimer,
+    isRelayConnected, offlineQueue
+  } = useKryptonStore();
+
   const [activeContactId, setActiveContactId] = useState<string | null>(initialContactId || (contacts && contacts.length > 0 ? contacts[0]?.id || null : null));
   
   const [input, setInput] = useState('');
   const [isAiTyping, setIsAiTyping] = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [transferAmount, setTransferAmount] = useState('');
+  
+  // Context menu state
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; msgId: string; isMe: boolean } | null>(null);
+
+  // Self-destruct dropdown
+  const [showDestructDropdown, setShowDestructDropdown] = useState(false);
+
+  // Self-destruct countdown (re-renders every second)
+  const [, setTick] = useState(0);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -30,6 +54,28 @@ export default function ChatWindow() {
   useEffect(() => {
     if (!keys) generateKeys();
   }, [keys, generateKeys]);
+
+  // Self-destruct ticker — check and delete expired messages every second
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTick(t => t + 1); // Force re-render for countdown display
+      const { messages, deleteMessage } = useKryptonStore.getState();
+      const now = Date.now();
+      for (const msg of messages) {
+        if (msg.selfDestructAt && msg.selfDestructAt <= now && !msg.isDeleted) {
+          deleteMessage(msg.id);
+        }
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Close context menu on click outside
+  useEffect(() => {
+    const handler = () => setContextMenu(null);
+    if (contextMenu) window.addEventListener('click', handler);
+    return () => window.removeEventListener('click', handler);
+  }, [contextMenu]);
 
   const activeContact = contacts.find(c => c.id === activeContactId);
   const activeMessages = messages.filter(m => 
@@ -123,6 +169,19 @@ export default function ChatWindow() {
     }
   };
 
+  // ── Context menu handler ──
+  const handleContextMenu = (e: React.MouseEvent, msgId: string, isMe: boolean) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY, msgId, isMe });
+  };
+
+  // ── Format countdown ──
+  const formatCountdown = (destructAt: number): string => {
+    const remaining = Math.max(0, Math.ceil((destructAt - Date.now()) / 1000));
+    if (remaining > 60) return `${Math.floor(remaining / 60)}m ${remaining % 60}s`;
+    return `${remaining}s`;
+  };
+
   return (
     <div className="flex h-full w-full max-w-7xl mx-auto p-4 gap-4">
       
@@ -187,9 +246,50 @@ export default function ChatWindow() {
                 </div>
               </div>
               <div className="flex items-center space-x-3">
-                <button title="Disappearing Messages" className="text-purple-400 hover:text-purple-300 transition-colors bg-purple-500/10 p-2 rounded-full">
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                </button>
+                {/* Offline Queue Badge */}
+                {!isRelayConnected && (
+                  <div className="bg-yellow-500/15 border border-yellow-500/30 text-yellow-400 text-[10px] font-bold uppercase tracking-wider px-3 py-1.5 rounded-full flex items-center">
+                    <svg className="w-3 h-3 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 5.636a9 9 0 010 12.728M15.536 8.464a5 5 0 010 7.072" /></svg>
+                    Offline{offlineQueue.length > 0 ? ` · ${offlineQueue.length} queued` : ''}
+                  </div>
+                )}
+
+                {/* Self-Destruct Timer Button */}
+                <div className="relative">
+                  <button
+                    onClick={() => setShowDestructDropdown(!showDestructDropdown)}
+                    title="Disappearing Messages"
+                    className={`transition-colors p-2 rounded-full ${selfDestructTTL ? 'text-orange-400 bg-orange-500/15 border border-orange-500/30 shadow-[0_0_8px_rgba(249,115,22,0.2)]' : 'text-purple-400 hover:text-purple-300 bg-purple-500/10'}`}
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                  </button>
+                  {showDestructDropdown && (
+                    <div className="absolute right-0 top-12 bg-[#161b22] border border-gray-700 rounded-xl shadow-2xl z-50 overflow-hidden w-48">
+                      <div className="px-3 py-2 border-b border-gray-700">
+                        <p className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Disappearing Messages</p>
+                      </div>
+                      {DESTRUCT_OPTIONS.map(opt => (
+                        <button
+                          key={opt.label}
+                          onClick={() => { setSelfDestructTimer(opt.value); setShowDestructDropdown(false); }}
+                          className={`w-full text-left px-4 py-2.5 text-sm transition-colors flex items-center justify-between ${selfDestructTTL === opt.value ? 'bg-orange-500/10 text-orange-400' : 'text-gray-300 hover:bg-white/5'}`}
+                        >
+                          <span>{opt.label}</span>
+                          {selfDestructTTL === opt.value && (
+                            <svg className="w-4 h-4 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {selfDestructTTL && (
+                  <span className="text-[10px] text-orange-400 font-bold bg-orange-500/10 px-2 py-1 rounded-full border border-orange-500/20">
+                    🔥 {selfDestructTTL}s
+                  </span>
+                )}
+
                 <button title="Contact Info" className="text-gray-400 hover:text-white transition-colors">
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                 </button>
@@ -210,9 +310,26 @@ export default function ChatWindow() {
 
               {activeMessages.map((msg) => {
                 const isMe = keys && msg.sender === keys.kryptonId;
+
+                // ── Tombstoned (unsent) message ──
+                if (msg.isDeleted) {
+                  return (
+                    <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
+                      <div className="bg-[#21262d]/50 border border-dashed border-gray-700 rounded-2xl px-4 py-3 max-w-[75%] flex items-center space-x-2">
+                        <svg className="w-4 h-4 text-gray-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
+                        <span className="text-sm text-gray-600 italic">This message was unsent</span>
+                      </div>
+                    </div>
+                  );
+                }
+
                 return (
-                  <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`${isMe ? 'bg-gradient-to-br from-[#58a6ff] to-[#1f6feb] text-white rounded-tr-none' : 'bg-[#21262d] border border-[rgba(48,54,61,0.5)] text-gray-200 rounded-tl-none'} rounded-2xl p-1 max-w-[75%] shadow-lg`}>
+                  <div
+                    key={msg.id}
+                    className={`flex ${isMe ? 'justify-end' : 'justify-start'} group`}
+                    onContextMenu={(e) => handleContextMenu(e, msg.id, !!isMe)}
+                  >
+                    <div className={`${isMe ? 'bg-gradient-to-br from-[#58a6ff] to-[#1f6feb] text-white rounded-tr-none' : 'bg-[#21262d] border border-[rgba(48,54,61,0.5)] text-gray-200 rounded-tl-none'} rounded-2xl p-1 max-w-[75%] shadow-lg relative`}>
                       
                       {/* In-chat Crypto Transfer UI */}
                       {msg.isCryptoTransfer ? (
@@ -236,10 +353,16 @@ export default function ChatWindow() {
                         </div>
                       )}
 
-                      <div className={`flex items-center space-x-1 px-3 pb-2 ${isMe ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`flex items-center space-x-1.5 px-3 pb-2 ${isMe ? 'justify-end' : 'justify-start'}`}>
                         <span className="text-[10px] opacity-60 font-medium">{new Date(msg.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
                         {isMe && (
                            <svg className="w-3 h-3 opacity-60" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                        )}
+                        {/* Self-destruct countdown */}
+                        {msg.selfDestructAt && (
+                          <span className="text-[9px] text-orange-400 font-bold flex items-center ml-1">
+                            🔥 {formatCountdown(msg.selfDestructAt)}
+                          </span>
                         )}
                       </div>
                     </div>
@@ -301,6 +424,38 @@ export default function ChatWindow() {
              </div>
              <h3 className="text-xl font-bold text-white mb-2">Krypton Secure Messenger</h3>
              <p className="text-sm max-w-md">End-to-end encrypted messaging and crypto transfers, powered by the decentralized web. Select a contact to begin.</p>
+          </div>
+        )}
+
+        {/* Context Menu */}
+        {contextMenu && (
+          <div
+            className="fixed z-[100] bg-[#161b22] border border-gray-700 rounded-xl shadow-2xl overflow-hidden w-44"
+            style={{ top: contextMenu.y, left: contextMenu.x }}
+          >
+            {contextMenu.isMe && (
+              <button
+                onClick={() => { unsendMessage(contextMenu.msgId); setContextMenu(null); }}
+                className="w-full text-left px-4 py-2.5 text-sm text-red-400 hover:bg-red-500/10 flex items-center space-x-2 transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
+                <span>Unsend</span>
+              </button>
+            )}
+            <button
+              onClick={() => { deleteMessage(contextMenu.msgId); setContextMenu(null); }}
+              className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-white/5 flex items-center space-x-2 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+              <span>Delete for me</span>
+            </button>
+            <button
+              onClick={() => { navigator.clipboard.writeText(messages.find(m => m.id === contextMenu.msgId)?.decryptedPayload || ''); setContextMenu(null); }}
+              className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-white/5 flex items-center space-x-2 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+              <span>Copy text</span>
+            </button>
           </div>
         )}
 

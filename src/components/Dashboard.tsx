@@ -74,7 +74,7 @@ function CustomTooltip({ active, payload, label }: any) {
 // Main Dashboard Component
 // ════════════════════════════════════════════
 export default function Dashboard() {
-  const { messages, contacts, keys, walletState } = useKryptonStore();
+  const { messages, contacts, keys, walletState, selfDestructTTL, isRelayConnected, offlineQueue } = useKryptonStore();
   const [peerEvents, setPeerEvents] = useState<PeerEvent[]>([]);
   const [activePeers, setActivePeers] = useState<Map<string, 'connected' | 'disconnected'>>(new Map());
   const [identityCreatedAt] = useState(() => Date.now()); // approximation
@@ -314,7 +314,7 @@ export default function Dashboard() {
                     stroke="none"
                   >
                     {(walletPieData.length > 0 ? walletPieData : [{ name: 'Empty', value: 1 }]).map((_, i) => (
-                      <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                      <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length] ?? '#666'} />
                     ))}
                   </Pie>
                   <Tooltip content={<CustomTooltip />} />
@@ -367,7 +367,7 @@ export default function Dashboard() {
           <div className="bg-black/20 rounded-xl p-5 border border-gray-800 text-center">
             <p className="text-xs text-gray-500 uppercase tracking-widest font-bold mb-2">Key Type</p>
             <p className="text-lg font-black text-[#d2a8ff]">Curve25519</p>
-            <p className="text-[10px] text-gray-600 mt-1">NaCl box (XSalsa20-Poly1305)</p>
+            <p className="text-[10px] text-gray-600 mt-1">+ HKDF Ratchet (PFS)</p>
           </div>
           <div className="bg-black/20 rounded-xl p-5 border border-gray-800 text-center">
             <p className="text-xs text-gray-500 uppercase tracking-widest font-bold mb-2">Identity Age</p>
@@ -383,6 +383,31 @@ export default function Dashboard() {
             <p className="text-xs text-gray-500 uppercase tracking-widest font-bold mb-2">Pairing Failures</p>
             <p className="text-lg font-black text-green-400">{stats.pairingFailures}</p>
             <p className="text-[10px] text-gray-600 mt-1">ID = Key eliminates mismatches</p>
+          </div>
+        </div>
+
+        {/* Self-destruct + Offline queue row */}
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mt-4">
+          <div className="bg-black/20 rounded-xl p-5 border border-gray-800 text-center">
+            <p className="text-xs text-gray-500 uppercase tracking-widest font-bold mb-2">Self-Destruct</p>
+            <p className={`text-lg font-black ${selfDestructTTL ? 'text-orange-400' : 'text-gray-600'}`}>
+              {selfDestructTTL ? `${selfDestructTTL}s` : 'Off'}
+            </p>
+            <p className="text-[10px] text-gray-600 mt-1">{selfDestructTTL ? '🔥 Messages auto-delete' : 'Disabled'}</p>
+          </div>
+          <div className="bg-black/20 rounded-xl p-5 border border-gray-800 text-center">
+            <p className="text-xs text-gray-500 uppercase tracking-widest font-bold mb-2">Offline Queue</p>
+            <p className={`text-lg font-black ${offlineQueue.length > 0 ? 'text-yellow-400' : 'text-green-400'}`}>
+              {offlineQueue.length}
+            </p>
+            <p className="text-[10px] text-gray-600 mt-1">{offlineQueue.length > 0 ? 'Pending delivery' : 'All delivered'}</p>
+          </div>
+          <div className="bg-black/20 rounded-xl p-5 border border-gray-800 text-center">
+            <p className="text-xs text-gray-500 uppercase tracking-widest font-bold mb-2">Relay Status</p>
+            <p className={`text-lg font-black ${isRelayConnected ? 'text-green-400' : 'text-red-400'}`}>
+              {isRelayConnected ? 'Online' : 'Offline'}
+            </p>
+            <p className="text-[10px] text-gray-600 mt-1">{isRelayConnected ? 'Connected to relay' : 'Queuing messages'}</p>
           </div>
         </div>
 

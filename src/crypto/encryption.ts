@@ -64,3 +64,52 @@ export async function decryptFromContact(
 export function generateEphemeralKeyPair() {
   return nacl.box.keyPair();
 }
+
+// ── Forward Secrecy (Ratchet-based) ──
+// These functions wrap the ratchet module for use in the message pipeline.
+// They fall back to static crypto_box if no ratchet state exists for a contact.
+
+import {
+  type RatchetState,
+  computeSharedSecret,
+  initRatchet,
+  encryptWithRatchet,
+  decryptWithRatchet
+} from './ratchet';
+
+export type { RatchetState };
+
+/**
+ * Initialize a ratchet state for a contact using ECDH shared secret.
+ */
+export async function initContactRatchet(
+  myPrivateKey: Uint8Array,
+  theirPublicKey: Uint8Array,
+  contactId: string
+): Promise<RatchetState> {
+  const sharedSecret = await computeSharedSecret(myPrivateKey, theirPublicKey);
+  return initRatchet(sharedSecret, contactId);
+}
+
+/**
+ * Encrypt with forward secrecy if ratchet state is available.
+ * Returns the ciphertext, updated ratchet state, and ratchet index.
+ */
+export async function encryptWithPFS(
+  payload: string,
+  ratchetState: RatchetState
+): Promise<{ ciphertext: string; newState: RatchetState; ratchetIndex: number }> {
+  const { ciphertext, newState, messageIndex } = await encryptWithRatchet(payload, ratchetState);
+  return { ciphertext, newState, ratchetIndex: messageIndex };
+}
+
+/**
+ * Decrypt with forward secrecy using the ratchet state.
+ */
+export async function decryptWithPFS(
+  ciphertextBase64: string,
+  ratchetState: RatchetState,
+  ratchetIndex: number
+): Promise<{ plaintext: string; newState: RatchetState }> {
+  return decryptWithRatchet(ciphertextBase64, ratchetState, ratchetIndex);
+}

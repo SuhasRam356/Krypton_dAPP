@@ -8,7 +8,7 @@ import { ethers } from 'ethers';
 
 export default function WalletDashboard() {
   const { walletState, keys, updateWalletBalance } = useKryptonStore();
-  const { provider, address: connectedAddress, connect, disconnect, isConnecting } = useWeb3();
+  const { provider, address: connectedAddress, connect, disconnect, isConnecting, networkName, switchToSepolia, sendTransaction } = useWeb3();
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   
@@ -18,6 +18,8 @@ export default function WalletDashboard() {
   const [sendAmount, setSendAmount] = useState('');
   const [sendAddress, setSendAddress] = useState('');
   const [rpcError, setRpcError] = useState<string | null>(null);
+  const [isSending, setIsSending] = useState(false);
+  const [txResult, setTxResult] = useState<{ txHash: string; blockNumber: number } | null>(null);
 
   // Fetch real on-chain balance when MetaMask connects
   useEffect(() => {
@@ -78,12 +80,33 @@ export default function WalletDashboard() {
     }
   };
 
-  const handleSendSubmit = (e: React.FormEvent) => {
+  const handleSendSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    alert(`Mock Send: Sending ${sendAmount} to ${sendAddress}`);
-    setShowSendModal(false);
-    setSendAmount('');
-    setSendAddress('');
+    if (!sendAmount || !sendAddress) return;
+
+    // If MetaMask is connected on Sepolia, do a real on-chain transfer
+    if (connectedAddress && networkName === 'Sepolia') {
+      setIsSending(true);
+      setTxResult(null);
+      try {
+        const result = await sendTransaction(sendAddress, sendAmount);
+        setTxResult(result);
+        // Refresh balance
+        if (provider) {
+          const bal = await provider.getBalance(connectedAddress);
+          updateWalletBalance('ETH', parseFloat(ethers.formatEther(bal)));
+        }
+      } catch (err: any) {
+        alert(`Transaction failed: ${err.message}`);
+      } finally {
+        setIsSending(false);
+      }
+    } else {
+      alert(`Mock Send: Sending ${sendAmount} ETH to ${sendAddress}\n\nTo send real ETH, connect MetaMask on Sepolia testnet.`);
+      setShowSendModal(false);
+      setSendAmount('');
+      setSendAddress('');
+    }
   };
 
   return (
@@ -118,6 +141,27 @@ export default function WalletDashboard() {
               </button>
             )}
           </div>
+
+          {/* Network Badge + Sepolia switch */}
+          {connectedAddress && (
+            <div className="flex items-center gap-2">
+              <span className={`text-xs font-bold px-3 py-1.5 rounded-full border ${
+                networkName === 'Sepolia' ? 'bg-purple-500/15 text-purple-400 border-purple-500/30' :
+                networkName === 'Mainnet' ? 'bg-green-500/15 text-green-400 border-green-500/30' :
+                'bg-gray-500/15 text-gray-400 border-gray-500/30'
+              }`}>
+                {networkName}
+              </span>
+              {networkName !== 'Sepolia' && (
+                <button
+                  onClick={switchToSepolia}
+                  className="text-[10px] text-purple-400 hover:text-purple-300 underline transition-colors"
+                >
+                  Switch to Sepolia
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         <span className="text-gray-400 text-sm font-medium tracking-wider uppercase mb-2 z-10">Total Balance</span>
@@ -259,40 +303,80 @@ export default function WalletDashboard() {
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
             </button>
             <h2 className="text-xl font-bold text-white mb-6">Send Funds</h2>
-            <form onSubmit={handleSendSubmit} className="space-y-4">
-              <div>
-                <label className="block text-xs text-gray-400 uppercase tracking-wider mb-2">Recipient Address</label>
-                <input 
-                  type="text" 
-                  value={sendAddress}
-                  onChange={(e) => setSendAddress(e.target.value)}
-                  placeholder="0x..."
-                  required
-                  className="w-full bg-[#0d1117] border border-gray-700 rounded-lg p-3 text-white focus:border-[#58a6ff] outline-none transition-colors"
-                />
+
+            {/* Transaction success result */}
+            {txResult ? (
+              <div className="space-y-4">
+                <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4 text-center">
+                  <svg className="w-10 h-10 text-green-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                  <p className="text-green-400 font-bold text-lg">Transaction Confirmed!</p>
+                  <p className="text-gray-400 text-xs mt-1">Block #{txResult.blockNumber}</p>
+                </div>
+                <div className="bg-black/30 rounded-lg p-3 border border-gray-800">
+                  <p className="text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">Transaction Hash</p>
+                  <a
+                    href={`https://sepolia.etherscan.io/tx/${txResult.txHash}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-[#58a6ff] hover:underline font-mono break-all"
+                  >
+                    {txResult.txHash}
+                  </a>
+                </div>
+                <button
+                  onClick={() => { setTxResult(null); setShowSendModal(false); setSendAmount(''); setSendAddress(''); }}
+                  className="w-full bg-gray-700 hover:bg-gray-600 text-white py-3 rounded-lg font-bold transition-colors"
+                >
+                  Done
+                </button>
               </div>
-              <div>
-                <label className="block text-xs text-gray-400 uppercase tracking-wider mb-2">Amount</label>
-                <div className="relative">
+            ) : (
+              <form onSubmit={handleSendSubmit} className="space-y-4">
+                {connectedAddress && networkName === 'Sepolia' && (
+                  <div className="bg-purple-500/10 border border-purple-500/30 rounded-lg px-3 py-2 text-center">
+                    <p className="text-[10px] text-purple-400 font-bold uppercase tracking-widest">🔗 Real On-Chain Transfer (Sepolia)</p>
+                  </div>
+                )}
+                <div>
+                  <label className="block text-xs text-gray-400 uppercase tracking-wider mb-2">Recipient Address</label>
                   <input 
-                    type="number" 
-                    step="any"
-                    value={sendAmount}
-                    onChange={(e) => setSendAmount(e.target.value)}
-                    placeholder="0.00"
+                    type="text" 
+                    value={sendAddress}
+                    onChange={(e) => setSendAddress(e.target.value)}
+                    placeholder="0x..."
                     required
                     className="w-full bg-[#0d1117] border border-gray-700 rounded-lg p-3 text-white focus:border-[#58a6ff] outline-none transition-colors"
                   />
-                  <span className="absolute right-3 top-3 text-gray-500 font-bold">ETH</span>
                 </div>
-              </div>
-              <button 
-                type="submit"
-                className="w-full bg-[#58a6ff] hover:bg-[#1f6feb] text-white py-3 rounded-lg font-bold shadow-lg mt-2 transition-colors"
-              >
-                Confirm Send
-              </button>
-            </form>
+                <div>
+                  <label className="block text-xs text-gray-400 uppercase tracking-wider mb-2">Amount</label>
+                  <div className="relative">
+                    <input 
+                      type="number" 
+                      step="any"
+                      value={sendAmount}
+                      onChange={(e) => setSendAmount(e.target.value)}
+                      placeholder="0.00"
+                      required
+                      className="w-full bg-[#0d1117] border border-gray-700 rounded-lg p-3 text-white focus:border-[#58a6ff] outline-none transition-colors"
+                    />
+                    <span className="absolute right-3 top-3 text-gray-500 font-bold">ETH</span>
+                  </div>
+                </div>
+                <button 
+                  type="submit"
+                  disabled={isSending}
+                  className="w-full bg-[#58a6ff] hover:bg-[#1f6feb] text-white py-3 rounded-lg font-bold shadow-lg mt-2 transition-colors disabled:opacity-50 flex items-center justify-center"
+                >
+                  {isSending ? (
+                    <>
+                      <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                      Confirming...
+                    </>
+                  ) : 'Confirm Send'}
+                </button>
+              </form>
+            )}
           </div>
         </div>
       )}

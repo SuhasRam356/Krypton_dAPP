@@ -33,7 +33,7 @@ export default function Web3Browser() {
     timeSavedMins: 45
   });
 
-  const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0];
+  const activeTab = (tabs.find(t => t.id === activeTabId) || tabs[0])!;
   
   const updateTab = (id: string, updates: Partial<Tab>) => {
     setTabs(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
@@ -58,12 +58,12 @@ export default function Web3Browser() {
     e.stopPropagation();
     setTabs(prev => {
       if (prev.length === 1) {
-        return [{ ...prev[0], url: 'krypton://newtab', title: 'New Tab', inputUrl: '', trackersBlocked: 0 }];
+        return [{ ...prev[0]!, url: 'krypton://newtab', title: 'New Tab', inputUrl: '', trackersBlocked: 0 }];
       }
       const newTabs = prev.filter(t => t.id !== id);
       if (activeTabId === id) {
         const idx = prev.findIndex(t => t.id === id);
-        setActiveTabId(newTabs[Math.max(0, idx - 1)].id);
+        setActiveTabId(newTabs[Math.max(0, idx - 1)]!.id);
       }
       return newTabs;
     });

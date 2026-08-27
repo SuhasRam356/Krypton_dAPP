@@ -3,20 +3,39 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { ethers } from 'ethers';
 
+interface TransactionResult {
+  txHash: string;
+  blockNumber: number;
+}
+
 interface Web3ContextType {
   provider: ethers.BrowserProvider | null;
   signer: ethers.JsonRpcSigner | null;
   address: string | null;
   chainId: bigint | null;
+  networkName: string;
   connect: () => Promise<void>;
   disconnect: () => void;
   isConnecting: boolean;
   error: string | null;
+  sendTransaction: (to: string, amountEth: string) => Promise<TransactionResult>;
+  switchToSepolia: () => Promise<void>;
 }
 
 const Web3Context = createContext<Web3ContextType | null>(null);
 
 import { useKryptonStore } from '@/store/useKryptonStore';
+
+// Chain ID → friendly name mapping
+const CHAIN_NAMES: Record<string, string> = {
+  '1': 'Mainnet',
+  '11155111': 'Sepolia',
+  '5': 'Goerli',
+  '137': 'Polygon',
+  '80001': 'Mumbai',
+  '42161': 'Arbitrum',
+  '10': 'Optimism',
+};
 
 export function WalletProvider({ children }: { children: ReactNode }) {
   const [provider, setProvider] = useState<ethers.BrowserProvider | null>(null);
@@ -27,6 +46,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   
   const { linkWallet } = useKryptonStore();
+
+  const networkName = chainId ? (CHAIN_NAMES[chainId.toString()] || `Chain ${chainId}`) : 'Not Connected';
 
   // Initialize provider if MetaMask exists
   useEffect(() => {
@@ -47,9 +68,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         }
       });
 
-      // Handle chain changes
-      (window as any).ethereum.on('chainChanged', () => {
-        window.location.reload();
+      // Handle chain changes — update chainId instead of reloading
+      (window as any).ethereum.on('chainChanged', (newChainIdHex: string) => {
+        setChainId(BigInt(newChainIdHex));
       });
       
       // Auto-connect if already connected
@@ -61,6 +82,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
             linkWallet(newAddress);
           }
           browserProvider.getSigner().then(setSigner);
+          browserProvider.getNetwork().then(net => setChainId(net.chainId));
         }
       }).catch(console.error);
     }
@@ -97,8 +119,62 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     setChainId(null);
   };
 
+  /**
+   * Send real ETH on-chain.
+   * Used for in-chat Sepolia transfers.
+   */
+  const sendTransaction = async (to: string, amountEth: string): Promise<TransactionResult> => {
+    if (!signer) throw new Error("Wallet not connected");
+
+    const tx = await signer.sendTransaction({
+      to,
+      value: ethers.parseEther(amountEth)
+    });
+
+    // Wait for 1 confirmation
+    const receipt = await tx.wait(1);
+    if (!receipt) throw new Error("Transaction failed — no receipt");
+
+    return {
+      txHash: tx.hash,
+      blockNumber: receipt.blockNumber
+    };
+  };
+
+  /**
+   * Prompt MetaMask to switch to Sepolia testnet.
+   */
+  const switchToSepolia = async () => {
+    if (typeof window === 'undefined' || !(window as any).ethereum) return;
+
+    try {
+      await (window as any).ethereum.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: '0xaa36a7' }] // 11155111 in hex
+      });
+    } catch (switchError: any) {
+      // If Sepolia isn't added to MetaMask, add it
+      if (switchError.code === 4902) {
+        await (window as any).ethereum.request({
+          method: 'wallet_addEthereumChain',
+          params: [{
+            chainId: '0xaa36a7',
+            chainName: 'Sepolia Testnet',
+            nativeCurrency: { name: 'Sepolia ETH', symbol: 'ETH', decimals: 18 },
+            rpcUrls: ['https://rpc.sepolia.org'],
+            blockExplorerUrls: ['https://sepolia.etherscan.io']
+          }]
+        });
+      }
+    }
+  };
+
   return (
-    <Web3Context.Provider value={{ provider, signer, address, chainId, connect, disconnect, isConnecting, error }}>
+    <Web3Context.Provider value={{
+      provider, signer, address, chainId, networkName,
+      connect, disconnect, isConnecting, error,
+      sendTransaction, switchToSepolia
+    }}>
       {children}
     </Web3Context.Provider>
   );

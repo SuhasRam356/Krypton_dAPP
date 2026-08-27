@@ -21,6 +21,15 @@ export type BaseMessage = {
   transferAmount?: number;
   transferSymbol?: string;
   isNetworkRelayed?: boolean;
+
+  // ── Unsend / Self-Destruct ──
+  selfDestructTTL?: number;    // Seconds after reading before auto-delete (e.g. 30, 60, 300)
+  selfDestructAt?: number;     // Computed: timestamp when this message should auto-delete
+  isDeleted?: boolean;         // Tombstone — sender unsent this message
+  deletedAt?: number;          // When it was unsent
+
+  // ── Forward Secrecy (Phase 3) ──
+  ratchetIndex?: number;       // Which ratchet step this message was encrypted under
 };
 
 // Discriminated union for message types
@@ -40,6 +49,14 @@ export type OnChainMessage = BaseMessage & {
 
 export type KryptonMessage = OnionRoutedMessage | OnChainMessage;
 
+// ── Control messages (not displayed in chat, used for signaling) ──
+export type ControlMessage = {
+  type: 'UNSEND';
+  messageId: string;         // The ID of the message to tombstone
+  sender: string;
+  timestamp: number;
+};
+
 export const WalletAssetSchema = z.object({
   symbol: z.string(),
   name: z.string(),
@@ -53,5 +70,5 @@ export type WalletAsset = z.infer<typeof WalletAssetSchema>;
 export type WalletState = {
   address: Address;
   assets: WalletAsset[];
-  network: 'Mainnet' | 'Testnet';
+  network: 'Mainnet' | 'Testnet' | 'Sepolia';
 };

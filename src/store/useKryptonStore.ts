@@ -1,9 +1,9 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { generateKryptonIdentity, fromHex, KryptonKeys } from '@/crypto/keys';
-import { sendToNetwork, subscribeToInbox } from '@/crypto/network';
+import { sendToNetwork, subscribeToInbox, sendUnsendSignal, onConnectivityChange } from '@/crypto/network';
 import { decryptFromContact } from '@/crypto/encryption';
-import type { KryptonMessage, WalletState, Contact } from '@/types';
+import type { KryptonMessage, WalletState, Contact, ControlMessage } from '@/types';
 
 const AI_CONTACT_ID = '05_AI_KRYPTON_ASSISTANT';
 
@@ -22,6 +22,19 @@ interface KryptonStore {
   addMessage: (msg: KryptonMessage) => void;
   clearMessages: () => void;
   startNetworkSync: () => void;
+
+  // ── Unsend / Delete ──
+  deleteMessage: (id: string) => void;
+  unsendMessage: (id: string) => void;
+
+  // ── Self-Destruct ──
+  selfDestructTTL: number | null;   // Active TTL in seconds, or null if off
+  setSelfDestructTimer: (ttlSeconds: number | null) => void;
+
+  // ── Offline Queue ──
+  offlineQueue: KryptonMessage[];
+  isRelayConnected: boolean;
+  flushOfflineQueue: () => void;
 
   // Contacts
   contacts: Contact[];
@@ -68,21 +81,96 @@ export const useKryptonStore = create<KryptonStore>()(
 
       messages: [],
       isNetworkSyncing: false,
+
       addMessage: (msg) => {
         set((state) => {
           // Prevent duplicates
           if (state.messages.find(m => m.id === msg.id)) return state;
 
           // If we are the sender, broadcast it to the network — ciphertext only, never plaintext.
-          const { keys } = get();
+          const { keys, selfDestructTTL, isRelayConnected } = get();
           if (keys && msg.sender === keys.kryptonId && !msg.isNetworkRelayed && msg.recipient !== AI_CONTACT_ID) {
             const { decryptedPayload, ...wireMsg } = msg;
-            sendToNetwork(msg.recipient, { ...wireMsg, isNetworkRelayed: true });
+
+            // Attach self-destruct TTL if active
+            const wireMsgWithTTL = selfDestructTTL
+              ? { ...wireMsg, isNetworkRelayed: true, selfDestructTTL }
+              : { ...wireMsg, isNetworkRelayed: true };
+
+            const sent = sendToNetwork(msg.recipient, wireMsgWithTTL);
+
+            // If relay is offline, queue the message for later
+            if (!sent && !isRelayConnected) {
+              set((s) => ({
+                offlineQueue: [...s.offlineQueue, { ...msg, isNetworkRelayed: false } as KryptonMessage]
+              }));
+            }
           }
-          return { messages: [...state.messages, msg] };
+
+          // Apply self-destruct timer to outgoing messages
+          const finalMsg = selfDestructTTL
+            ? { ...msg, selfDestructTTL, selfDestructAt: Date.now() + selfDestructTTL * 1000 }
+            : msg;
+
+          // Apply self-destruct timer to incoming messages that have a TTL
+          const msgWithDestruct = (!selfDestructTTL && msg.selfDestructTTL)
+            ? { ...msg, selfDestructAt: Date.now() + msg.selfDestructTTL * 1000 }
+            : finalMsg;
+
+          return { messages: [...state.messages, msgWithDestruct] };
         });
       },
+
       clearMessages: () => set({ messages: [] }),
+
+      // ── Delete a message locally ──
+      deleteMessage: (id: string) => set((state) => ({
+        messages: state.messages.filter(m => m.id !== id)
+      })),
+
+      // ── Unsend a message (both sides) ──
+      unsendMessage: (id: string) => {
+        const { messages, keys } = get();
+        const msg = messages.find(m => m.id === id);
+        if (!msg || !keys) return;
+
+        // Only the sender can unsend
+        if (msg.sender !== keys.kryptonId) return;
+
+        // Mark as tombstone locally
+        set((state) => ({
+          messages: state.messages.map(m =>
+            m.id === id
+              ? { ...m, isDeleted: true, deletedAt: Date.now(), decryptedPayload: undefined } as unknown as KryptonMessage
+              : m
+          ) as KryptonMessage[]
+        }));
+
+        // Broadcast unsend signal to the recipient
+        if (msg.recipient !== AI_CONTACT_ID) {
+          sendUnsendSignal(msg.recipient, id, keys.kryptonId);
+        }
+      },
+
+      // ── Self-Destruct Timer ──
+      selfDestructTTL: null,
+      setSelfDestructTimer: (ttlSeconds: number | null) => set({ selfDestructTTL: ttlSeconds }),
+
+      // ── Offline Queue ──
+      offlineQueue: [],
+      isRelayConnected: false,
+
+      flushOfflineQueue: () => {
+        const { offlineQueue, keys } = get();
+        if (offlineQueue.length === 0 || !keys) return;
+
+        for (const msg of offlineQueue) {
+          const { decryptedPayload, ...wireMsg } = msg;
+          sendToNetwork(msg.recipient, { ...wireMsg, isNetworkRelayed: true });
+        }
+
+        set({ offlineQueue: [] });
+      },
 
       // Subscribes to this identity's inbox. Krypton ID never changes post-generation,
       // so this only ever needs to run once per identity (no wallet-triggered resubscribe).
@@ -90,6 +178,29 @@ export const useKryptonStore = create<KryptonStore>()(
         const { keys } = get();
         if (!keys) return;
         set({ isNetworkSyncing: true });
+
+        // Track relay connectivity
+        onConnectivityChange((connected) => {
+          set({ isRelayConnected: connected });
+          if (connected) {
+            // Flush any queued messages when we reconnect
+            get().flushOfflineQueue();
+          }
+        });
+
+        // Handle incoming control messages (unsend signals)
+        const handleControlMessage = (ctrl: ControlMessage) => {
+          if (ctrl.type === 'UNSEND') {
+            set((state) => ({
+              messages: state.messages.map(m =>
+                m.id === ctrl.messageId && m.sender === ctrl.sender
+                  ? { ...m, isDeleted: true, deletedAt: ctrl.timestamp, decryptedPayload: undefined } as unknown as KryptonMessage
+                  : m
+              ) as KryptonMessage[]
+            }));
+          }
+        };
+
         subscribeToInbox(keys.kryptonId, async (incomingMsg: any) => {
           if (incomingMsg && incomingMsg.id && incomingMsg.sender && incomingMsg.encryptedPayload) {
             const { contacts, keys, addMessage, addContact } = get();
@@ -132,6 +243,7 @@ export const useKryptonStore = create<KryptonStore>()(
               isCryptoTransfer: incomingMsg.isCryptoTransfer,
               transferAmount: incomingMsg.transferAmount,
               transferSymbol: incomingMsg.transferSymbol,
+              selfDestructTTL: incomingMsg.selfDestructTTL,
               isNetworkRelayed: true,
               metadataStripped: true,
               routePath: ['p2p-relay'],
@@ -140,7 +252,7 @@ export const useKryptonStore = create<KryptonStore>()(
 
             addMessage(msg as KryptonMessage);
           }
-        });
+        }, handleControlMessage);
       },
 
       contacts: [

@@ -102,7 +102,7 @@ export function computeDashboardStats(
   const networkStats: NetworkStats = {
     peerEvents,
     messagesRelayed: messages.filter(m => m.isNetworkRelayed).length,
-    lastSyncTimestamp: peerEvents.length > 0 ? peerEvents[peerEvents.length - 1].timestamp : 0
+    lastSyncTimestamp: peerEvents.length > 0 ? (peerEvents[peerEvents.length - 1]?.timestamp ?? 0) : 0
   };
 
   return {
