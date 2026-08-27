@@ -80,6 +80,10 @@ export default function LockScreen({ children }: { children: ReactNode }) {
         // Create new salt and save it
         saltBytes = await generateSalt();
         localStorage.setItem('krypton-vault-salt', sodium.to_base64(saltBytes));
+        
+        // If we are creating a brand new vault, any existing storage is unrecoverable or old plaintext
+        // Wipe it so we don't trip decryption errors on rehydration
+        localStorage.removeItem('krypton-storage');
       } else {
         saltBytes = sodium.from_base64(saltStr);
       }
