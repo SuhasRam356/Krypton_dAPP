@@ -2,7 +2,7 @@
 
 import { useState, useEffect, type ReactNode } from 'react';
 import sodium from 'libsodium-wrappers';
-import { deriveKeyFromPin, generateSalt, setVaultKey } from '@/crypto/vault';
+import { deriveKeyFromPin, generateSalt, setVaultKey, decryptVault } from '@/crypto/vault';
 import { useKryptonStore } from '@/store/useKryptonStore';
 
 const AUTO_LOCK_MS = 15 * 60 * 1000;
@@ -90,6 +90,17 @@ export default function LockScreen({ children }: { children: ReactNode }) {
 
       const key = await deriveKeyFromPin(pin, saltBytes);
       setVaultKey(key);
+
+      const encryptedString = localStorage.getItem('krypton-storage');
+      if (encryptedString && !isNewDevice) {
+        // Zustand persist swallows errors and falls back to default state.
+        // We manually test decryption here so a wrong PIN correctly throws and blocks login.
+        try {
+          await decryptVault(encryptedString, key);
+        } catch (error) {
+          throw new Error('Invalid PIN');
+        }
+      }
 
       await useKryptonStore.persist.rehydrate();
       useKryptonStore.getState().startNetworkSync();
