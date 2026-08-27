@@ -76,7 +76,7 @@ Krypton draws design inspiration from:
 
 ### 🔒 End-to-End Encrypted Messaging
 - Every message is encrypted using **Curve25519 + XSalsa20-Poly1305** (via libsodium)
-- **Perfect Forward Secrecy (PFS):** Uses an HKDF-style symmetric key ratchet (BLAKE2b) to rotate keys per message.
+- **Message-Key Ratcheting:** A demo symmetric message-key ratchet derived from a static ECDH shared secret to rotate keys per message.
 - **Self-Destruct & Unsend:** Supports disappearing messages with customizable TTLs and real-time message unsending (tombstoning).
 - **Offline Queue:** Safely spools messages when the network relay drops and auto-flushes upon reconnection.
 - Zero-knowledge architecture — the relay never sees plaintext
@@ -616,14 +616,14 @@ A Brave-inspired secure browser with:
 |-----------|-------------|
 | **Traffic analysis** | An observer can see that two Krypton IDs are communicating, even though message content is hidden. |
 | **Client compromise** | If an attacker has access to your browser's localStorage, they can read your private key and all decrypted messages. |
-| **Future secrecy** | The symmetric ratchet provides forward secrecy (past messages are safe), but full future secrecy requires an asynchronous DH ratchet (X3DH) which isn't possible over a pure P2P relay without a centralized prekey server. |
+| **Production-Grade Secrecy** | The current implementation is a demo symmetric message-key ratchet derived from a static ECDH shared secret. It is not equivalent to Signal-style Double Ratchet. If an attacker compromises a static identity key, they can derive the ratchet chains and potentially recover past messages. To reach best-in-class security, a full Double Ratchet with DH ratcheting and X3DH initial key agreement should be implemented (e.g., using an audited implementation like libsignal). |
 
 ### Cryptographic Primitives Used
 
 | Primitive | Algorithm | Library | Purpose |
 |-----------|-----------|---------|---------|
 | Key Exchange | Curve25519 ECDH | tweetnacl / libsodium | Shared secret derivation |
-| Forward Secrecy | HKDF (BLAKE2b) | libsodium (`crypto_generichash`) | Derives unique per-message keys (Symmetric Ratchet) |
+| Message Key Ratchet | HKDF (BLAKE2b) | libsodium (`crypto_generichash`) | Derives unique per-message keys (Demo Symmetric Ratchet) |
 | Symmetric Encryption | XSalsa20 | libsodium (`crypto_secretbox_easy`) | Message confidentiality |
 | Authentication | Poly1305 MAC | libsodium (`crypto_box_easy`) | Message integrity |
 | Nonce | 24-byte random | libsodium (`randombytes_buf`) | Prevents replay attacks |
@@ -690,7 +690,7 @@ OPENROUTER_API_KEY=sk-or-v1-your-key-here
 Contributions are welcome! Here are some areas where help is needed:
 
 ### Priority: High
-- [ ] **Double Ratchet** — implement ephemeral key rotation for Perfect Forward Secrecy
+- [ ] **Signal Protocol Implementation** — implement true Double Ratchet with DH ratcheting and X3DH initial key agreement (e.g., via an audited implementation like [libsignal](https://github.com/signalapp/libsignal.git)) for production-grade Perfect Forward Secrecy, replay protection, and authenticated headers.
 - [ ] **Message deletion** — ability to delete messages from the Gun graph
 - [ ] **Offline queue** — queue messages locally when the relay is unreachable
 
