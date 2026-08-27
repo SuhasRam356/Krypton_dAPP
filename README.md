@@ -76,6 +76,9 @@ Krypton draws design inspiration from:
 
 ### 🔒 End-to-End Encrypted Messaging
 - Every message is encrypted using **Curve25519 + XSalsa20-Poly1305** (via libsodium)
+- **Perfect Forward Secrecy (PFS):** Uses an HKDF-style symmetric key ratchet (BLAKE2b) to rotate keys per message.
+- **Self-Destruct & Unsend:** Supports disappearing messages with customizable TTLs and real-time message unsending (tombstoning).
+- **Offline Queue:** Safely spools messages when the network relay drops and auto-flushes upon reconnection.
 - Zero-knowledge architecture — the relay never sees plaintext
 - Krypton ID = Public Key — no separate key exchange step required
 
@@ -89,6 +92,7 @@ Krypton draws design inspiration from:
 ### 💰 Integrated Crypto Wallet
 - BIP39 mnemonic-derived Ethereum wallet
 - MetaMask integration for real on-chain balances
+- **Real On-Chain Transfers:** Supports broadcasting real Ethers.js transactions on the Sepolia Testnet directly within the chat UI.
 - In-chat crypto transfers (ADAMANT-style)
 - QR code receive address
 
@@ -146,12 +150,14 @@ graph TB
     subgraph Encryption["🔐 E2EE Pipeline"]
         Plain["Plaintext Message"]
         Nonce["Random Nonce<br/>(24 bytes)"]
-        CBox["crypto_box_easy<br/>(XSalsa20-Poly1305)"]
+        Ratchet["HKDF Symmetric Ratchet<br/>(BLAKE2b)"]
+        SBox["crypto_secretbox_easy<br/>(XSalsa20-Poly1305)"]
         Cipher["Ciphertext<br/>(nonce || encrypted)"]
 
-        Plain --> CBox
-        Nonce --> CBox
-        CBox --> Cipher
+        Plain --> SBox
+        Nonce --> SBox
+        Ratchet --> SBox
+        SBox --> Cipher
     end
 
     subgraph P2P["🌐 P2P Network"]
@@ -608,17 +614,17 @@ A Brave-inspired secure browser with:
 
 | Limitation | Explanation |
 |-----------|-------------|
-| **No Perfect Forward Secrecy (yet)** | Currently uses static Curve25519 keys. Ephemeral key rotation (Double Ratchet) is not yet implemented. |
 | **Traffic analysis** | An observer can see that two Krypton IDs are communicating, even though message content is hidden. |
 | **Client compromise** | If an attacker has access to your browser's localStorage, they can read your private key and all decrypted messages. |
-| **No message deletion from relay** | Once a message is written to the Gun graph, it persists on the relay. |
+| **Future secrecy** | The symmetric ratchet provides forward secrecy (past messages are safe), but full future secrecy requires an asynchronous DH ratchet (X3DH) which isn't possible over a pure P2P relay without a centralized prekey server. |
 
 ### Cryptographic Primitives Used
 
 | Primitive | Algorithm | Library | Purpose |
 |-----------|-----------|---------|---------|
 | Key Exchange | Curve25519 ECDH | tweetnacl / libsodium | Shared secret derivation |
-| Symmetric Encryption | XSalsa20 | libsodium (`crypto_box_easy`) | Message confidentiality |
+| Forward Secrecy | HKDF (BLAKE2b) | libsodium (`crypto_generichash`) | Derives unique per-message keys (Symmetric Ratchet) |
+| Symmetric Encryption | XSalsa20 | libsodium (`crypto_secretbox_easy`) | Message confidentiality |
 | Authentication | Poly1305 MAC | libsodium (`crypto_box_easy`) | Message integrity |
 | Nonce | 24-byte random | libsodium (`randombytes_buf`) | Prevents replay attacks |
 | Key Derivation | BIP39 + seed slicing | @scure/bip39 | Deterministic identity from mnemonic |
