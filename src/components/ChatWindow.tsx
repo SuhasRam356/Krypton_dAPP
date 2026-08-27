@@ -116,24 +116,24 @@ export default function ChatWindow() {
       );
     } else {
       // Use PFS Ratchet for real contacts
-      let state = ratchetStates[activeContact.id];
-      if (!state) {
+      let pair = ratchetStates[activeContact.id];
+      if (!pair) {
         await initRatchetForContact(activeContact.id);
-        state = useKryptonStore.getState().ratchetStates[activeContact.id];
+        pair = useKryptonStore.getState().ratchetStates[activeContact.id];
       }
-      if (!state) {
+      if (!pair) {
         alert("Failed to initialize secure connection.");
         return;
       }
 
-      const result = await encryptWithPFS(userText, state);
+      const result = await encryptWithPFS(userText, pair.send);
       ciphertext = result.ciphertext;
       ratchetIndex = result.ratchetIndex;
-      
-      // Update local state is handled directly in the store, but since encryptWithPFS 
-      // mutates the state object we should re-save it to Zustand.
+
+      // Only the send chain advances here — recv chain (for their incoming messages)
+      // is untouched, so decrypting their traffic is never affected by our own sends.
       useKryptonStore.setState(s => ({
-        ratchetStates: { ...s.ratchetStates, [activeContact.id]: result.newState }
+        ratchetStates: { ...s.ratchetStates, [activeContact.id]: { ...pair, send: result.newState } }
       }));
     }
 

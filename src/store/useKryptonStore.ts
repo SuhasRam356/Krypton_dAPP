@@ -47,7 +47,7 @@ interface KryptonStore {
   updateWalletBalance: (symbol: string, balance: number) => void;
 
   // ── Forward Secrecy ──
-  ratchetStates: Record<string, RatchetState>;
+  ratchetStates: Record<string, { send: RatchetState; recv: RatchetState }>;
   initRatchetForContact: (contactId: string) => Promise<void>;
 }
 
@@ -219,18 +219,19 @@ export const useKryptonStore = create<KryptonStore>()(
               const senderPubKey = fromHex(incomingMsg.sender);
               
               if (incomingMsg.ratchetIndex !== undefined) {
-                let state = get().ratchetStates[incomingMsg.sender];
-                if (!state) {
-                  state = await initContactRatchet(keys.messagingPrivateKey, senderPubKey, incomingMsg.sender);
+                let pair = get().ratchetStates[incomingMsg.sender];
+                if (!pair) {
+                  pair = await initContactRatchet(keys.messagingPrivateKey, senderPubKey, keys.kryptonId, incomingMsg.sender);
                 }
                 const { plaintext, newState } = await decryptWithPFS(
                   incomingMsg.encryptedPayload,
-                  state,
+                  pair.recv,
                   incomingMsg.ratchetIndex
                 );
                 decryptedPayload = plaintext;
-                // Save updated ratchet state
-                set(s => ({ ratchetStates: { ...s.ratchetStates, [incomingMsg.sender]: newState } }));
+                // Only the recv chain advances here — send chain is untouched, so our own
+                // outgoing counter is never disturbed by incoming traffic.
+                set(s => ({ ratchetStates: { ...s.ratchetStates, [incomingMsg.sender]: { ...pair, recv: newState } } }));
               } else {
                 // Fallback for non-ratcheted messages
                 decryptedPayload = await decryptFromContact(
@@ -318,9 +319,9 @@ export const useKryptonStore = create<KryptonStore>()(
 
         try {
           const theirPubKey = fromHex(contactId);
-          const state = await initContactRatchet(keys.messagingPrivateKey, theirPubKey, contactId);
+          const pair = await initContactRatchet(keys.messagingPrivateKey, theirPubKey, keys.kryptonId, contactId);
           set(s => ({
-            ratchetStates: { ...s.ratchetStates, [contactId]: state }
+            ratchetStates: { ...s.ratchetStates, [contactId]: pair }
           }));
         } catch (e) {
           console.error("Failed to init ratchet:", e);

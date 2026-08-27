@@ -72,7 +72,7 @@ export function generateEphemeralKeyPair() {
 import {
   type RatchetState,
   computeSharedSecret,
-  initRatchet,
+  initRatchetPair,
   encryptWithRatchet,
   decryptWithRatchet
 } from './ratchet';
@@ -80,15 +80,16 @@ import {
 export type { RatchetState };
 
 /**
- * Initialize a ratchet state for a contact using ECDH shared secret.
+ * Initialize a send/recv ratchet pair for a contact using ECDH shared secret.
  */
 export async function initContactRatchet(
   myPrivateKey: Uint8Array,
   theirPublicKey: Uint8Array,
-  contactId: string
-): Promise<RatchetState> {
+  myKryptonId: string,
+  theirKryptonId: string
+): Promise<{ send: RatchetState; recv: RatchetState }> {
   const sharedSecret = await computeSharedSecret(myPrivateKey, theirPublicKey);
-  return initRatchet(sharedSecret, contactId);
+  return initRatchetPair(sharedSecret, myKryptonId, theirKryptonId);
 }
 
 /**

@@ -41,24 +41,49 @@ export async function computeSharedSecret(
 }
 
 /**
- * Initialize a new ratchet from a shared secret.
- * The chain key is derived via BLAKE2b with a domain-separation salt.
+ * Initialize a send/recv ratchet PAIR from a shared secret.
+ *
+ * A single shared chain (the original design) is unsafe for real duplex chat: since the
+ * ECDH secret is identical for both peers, both would start from the same chain key and
+ * use it as their OWN outgoing counter. If both people send before either has received
+ * the other's message, both advance the "same" logical index for different plaintexts —
+ * and the receiver's fast-forward-only decrypt can't rewind to recover an index it has
+ * already passed locally. That shows up as intermittent decryption failures in ordinary
+ * back-and-forth conversation, not just under contrived conditions.
+ *
+ * Fix: derive TWO distinct chains from the shared secret, and deterministically assign
+ * which one is "my outgoing chain" by comparing the two Krypton IDs — both sides agree
+ * on the same assignment with no handshake required.
  */
+export async function initRatchetPair(
+  sharedSecret: Uint8Array,
+  myKryptonId: string,
+  theirKryptonId: string
+): Promise<{ send: RatchetState; recv: RatchetState }> {
+  await sodium.ready;
+
+  const saltA = sodium.from_string('krypton-ratchet-v1-chainA');
+  const saltB = sodium.from_string('krypton-ratchet-v1-chainB');
+  const chainA = sodium.crypto_generichash(32, sharedSecret, saltA);
+  const chainB = sodium.crypto_generichash(32, sharedSecret, saltB);
+
+  const iOwnChainA = myKryptonId < theirKryptonId;
+
+  return {
+    send: { chainKey: iOwnChainA ? chainA : chainB, messageIndex: 0, contactId: theirKryptonId },
+    recv: { chainKey: iOwnChainA ? chainB : chainA, messageIndex: 0, contactId: theirKryptonId },
+  };
+}
+
+/** @deprecated Unsafe for duplex chat — see initRatchetPair. Kept only so nothing else importing this breaks at build time; do not call it from new code. */
 export async function initRatchet(
   sharedSecret: Uint8Array,
   contactId: string
 ): Promise<RatchetState> {
   await sodium.ready;
-
-  // Domain-separated KDF: BLAKE2b(sharedSecret, key="krypton-ratchet-v1")
   const salt = sodium.from_string('krypton-ratchet-v1');
   const chainKey = sodium.crypto_generichash(32, sharedSecret, salt);
-
-  return {
-    chainKey,
-    messageIndex: 0,
-    contactId
-  };
+  return { chainKey, messageIndex: 0, contactId };
 }
 
 /**
