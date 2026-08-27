@@ -1,11 +1,8 @@
 import Gun from 'gun';
 import type { PeerEvent } from '@/store/dashboardStats';
 
-// TODO: replace with your self-hosted relay (radisk: true) as PEERS[0] for store-and-forward.
-// e.g. 'https://your-relay.onrender.com/gun'
-const PEERS = [
-  'http://localhost:8765/gun'
-];
+const envPeers = process.env.NEXT_PUBLIC_GUN_PEERS;
+const PEERS = envPeers ? envPeers.split(',') : ['http://localhost:8765/gun'];
 
 let gunInstance: ReturnType<typeof Gun> | null = null;
 

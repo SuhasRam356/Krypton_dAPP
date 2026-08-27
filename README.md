@@ -648,10 +648,12 @@ This starts a minimal Gun relay on `http://localhost:8765/gun`.
 ### How the Relay Works
 
 ```javascript
-// relay.js
+// relay.js (now includes CORS and Health Check)
 const Gun = require('gun');
-const server = require('http').createServer().listen(8765);
-const gun = Gun({ web: server });
+const http = require('http');
+const server = http.createServer((req, res) => { /* CORS & /health logic */ });
+server.listen(8765);
+const gun = Gun({ web: server, radisk: true });
 ```
 
 The relay:
@@ -659,16 +661,30 @@ The relay:
 2. Syncs data between all connected peers
 3. Provides store-and-forward — if Bob is offline when Alice sends, the relay holds the data until Bob reconnects
 
-### Changing the Relay URL
+---
 
-To point to a different relay (e.g., a deployed one on Render):
+## 🚀 Deployment
 
-```typescript
-// src/crypto/network.ts
-const PEERS = [
-  'https://your-relay.onrender.com/gun'  // Replace with your URL
-];
-```
+To deploy Krypton to production, you need to host both the **Next.js Frontend** and the **Gun.js Relay** backend.
+
+### 1. Deploy the Gun Relay (Render / Railway)
+The relay requires a long-running Node.js process and disk persistence (if you want messages to survive relay restarts).
+
+1. Create a new Web Service on Render or Railway.
+2. Set the build command to `npm install` and the start command to `node relay.js`.
+3. The platform will automatically expose the `/health` endpoint and the websocket path.
+4. Copy the public URL (e.g., `https://my-krypton-relay.onrender.com`).
+
+### 2. Deploy the Frontend (Vercel / Netlify)
+1. Import the repository into Vercel.
+2. In the Environment Variables settings, add your relay URL:
+   ```env
+   NEXT_PUBLIC_GUN_PEERS=https://my-krypton-relay.onrender.com/gun
+   ```
+   *(Note: Make sure to append `/gun` to the base URL)*
+3. Deploy! The frontend will now connect to your hosted relay instead of `localhost`.
+
+> **Note on TLS (HTTPS):** You do not need to configure SSL/TLS manually in `relay.js`. Cloud platforms like Render, Railway, and Vercel automatically terminate SSL at their reverse proxy, so traffic between the user and the platform is securely encrypted.
 
 ---
 
@@ -679,6 +695,9 @@ Create a `.env.local` file in the project root:
 ```bash
 # Required for the AI assistant feature (Krypton AI contact)
 OPENROUTER_API_KEY=sk-or-v1-your-key-here
+
+# Point the app to a remote relay (defaults to localhost:8765 if omitted)
+NEXT_PUBLIC_GUN_PEERS=https://your-relay.example.com/gun
 ```
 
 > **Note:** The AI assistant is optional. The rest of the app (messaging, wallet, browser, dashboard) works without it.
