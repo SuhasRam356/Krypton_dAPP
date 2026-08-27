@@ -2,7 +2,8 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { generateKryptonIdentity, fromHex, KryptonKeys } from '@/crypto/keys';
 import { sendToNetwork, subscribeToInbox, sendUnsendSignal, onConnectivityChange } from '@/crypto/network';
-import { decryptFromContact } from '@/crypto/encryption';
+import { encryptVault, decryptVault, getVaultKey } from '@/crypto/vault';
+import { initContactRatchet, decryptWithPFS, decryptFromContact, type RatchetState } from '@/crypto/encryption';
 import type { KryptonMessage, WalletState, Contact, ControlMessage } from '@/types';
 
 const AI_CONTACT_ID = '05_AI_KRYPTON_ASSISTANT';
@@ -44,6 +45,10 @@ interface KryptonStore {
   // Wallet
   walletState: WalletState | null;
   updateWalletBalance: (symbol: string, balance: number) => void;
+
+  // ── Forward Secrecy ──
+  ratchetStates: Record<string, RatchetState>;
+  initRatchetForContact: (contactId: string) => Promise<void>;
 }
 
 export const useKryptonStore = create<KryptonStore>()(
@@ -210,15 +215,32 @@ export const useKryptonStore = create<KryptonStore>()(
             let decryptedPayload = undefined;
 
             try {
-              // The Krypton ID IS the sender's public key — decode it directly, no separate
-              // "public key" field to go stale or get mismatched.
+              // The Krypton ID IS the sender's public key — decode it directly
               const senderPubKey = fromHex(incomingMsg.sender);
-              decryptedPayload = await decryptFromContact(
-                incomingMsg.encryptedPayload,
-                keys.messagingPrivateKey,
-                senderPubKey
-              );
+              
+              if (incomingMsg.ratchetIndex !== undefined) {
+                let state = get().ratchetStates[incomingMsg.sender];
+                if (!state) {
+                  state = await initContactRatchet(keys.messagingPrivateKey, senderPubKey, incomingMsg.sender);
+                }
+                const { plaintext, newState } = await decryptWithPFS(
+                  incomingMsg.encryptedPayload,
+                  state,
+                  incomingMsg.ratchetIndex
+                );
+                decryptedPayload = plaintext;
+                // Save updated ratchet state
+                set(s => ({ ratchetStates: { ...s.ratchetStates, [incomingMsg.sender]: newState } }));
+              } else {
+                // Fallback for non-ratcheted messages
+                decryptedPayload = await decryptFromContact(
+                  incomingMsg.encryptedPayload,
+                  keys.messagingPrivateKey,
+                  senderPubKey
+                );
+              }
             } catch (err) {
+              console.error("Decryption error:", err);
               decryptedPayload = "⚠️ [Decryption Failed]";
             }
 
@@ -243,6 +265,7 @@ export const useKryptonStore = create<KryptonStore>()(
               isCryptoTransfer: incomingMsg.isCryptoTransfer,
               transferAmount: incomingMsg.transferAmount,
               transferSymbol: incomingMsg.transferSymbol,
+              ratchetIndex: incomingMsg.ratchetIndex,
               selfDestructTTL: incomingMsg.selfDestructTTL,
               isNetworkRelayed: true,
               metadataStripped: true,
@@ -285,30 +308,62 @@ export const useKryptonStore = create<KryptonStore>()(
             )
           }
         };
-      })
+      }),
+
+      // ── Forward Secrecy ──
+      ratchetStates: {},
+      initRatchetForContact: async (contactId: string) => {
+        const { keys, ratchetStates } = get();
+        if (!keys || ratchetStates[contactId]) return;
+
+        try {
+          const theirPubKey = fromHex(contactId);
+          const state = await initContactRatchet(keys.messagingPrivateKey, theirPubKey, contactId);
+          set(s => ({
+            ratchetStates: { ...s.ratchetStates, [contactId]: state }
+          }));
+        } catch (e) {
+          console.error("Failed to init ratchet:", e);
+        }
+      }
     }),
     {
       name: 'krypton-storage',
-      // We explicitly tell persist to handle Uint8Arrays carefully — JSON.stringify strips them
-      // by default, so we round-trip them manually.
+      skipHydration: true, // App will manually trigger hydration after PIN unlock
       storage: {
-        getItem: (name) => {
-          const str = localStorage.getItem(name);
-          if (!str) return null;
-          return JSON.parse(str, (key, value) => {
-            if (value && typeof value === 'object' && value.type === 'Uint8Array') {
-              return new Uint8Array(value.data);
-            }
-            return value;
-          });
+        getItem: async (name) => {
+          const vaultKey = getVaultKey();
+          if (!vaultKey) return null; // Can't read without key
+          
+          const encryptedString = localStorage.getItem(name);
+          if (!encryptedString) return null;
+
+          try {
+            const decryptedString = await decryptVault(encryptedString, vaultKey);
+            return JSON.parse(decryptedString, (key, value) => {
+              if (value && typeof value === 'object' && value.type === 'Uint8Array') {
+                return new Uint8Array(value.data);
+              }
+              return value;
+            });
+          } catch (e) {
+            console.error("Vault decryption failed:", e);
+            throw new Error("Invalid PIN or Corrupted Vault");
+          }
         },
-        setItem: (name, value) => {
-          localStorage.setItem(name, JSON.stringify(value, (key, val) => {
+        setItem: async (name, value) => {
+          const vaultKey = getVaultKey();
+          if (!vaultKey) return; // Silent fail if somehow we're saving without a key
+
+          const jsonString = JSON.stringify(value, (key, val) => {
             if (val instanceof Uint8Array) {
               return { type: 'Uint8Array', data: Array.from(val) };
             }
             return val;
-          }));
+          });
+
+          const encryptedString = await encryptVault(jsonString, vaultKey);
+          localStorage.setItem(name, encryptedString);
         },
         removeItem: (name) => localStorage.removeItem(name),
       }

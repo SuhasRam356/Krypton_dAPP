@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import type { KryptonMessage, Contact } from '@/types';
-import { encryptForContact } from '@/crypto/encryption';
+import { encryptForContact, encryptWithPFS } from '@/crypto/encryption';
 import { fromHex } from '@/crypto/keys';
 import { useKryptonStore } from '@/store/useKryptonStore';
 
@@ -24,7 +24,8 @@ export default function ChatWindow() {
     messages, addMessage, deleteMessage, unsendMessage,
     keys, generateKeys, contacts,
     selfDestructTTL, setSelfDestructTimer,
-    isRelayConnected, offlineQueue
+    isRelayConnected, offlineQueue,
+    ratchetStates, initRatchetForContact
   } = useKryptonStore();
 
   const [activeContactId, setActiveContactId] = useState<string | null>(initialContactId || (contacts && contacts.length > 0 ? contacts[0]?.id || null : null));
@@ -104,11 +105,37 @@ export default function ChatWindow() {
       }
     }
 
-    const ciphertext = await encryptForContact(
-      userText,
-      keys.messagingPrivateKey,
-      targetPubKey
-    );
+    let ciphertext = "";
+    let ratchetIndex: number | undefined = undefined;
+
+    if (activeContact.isAi) {
+      ciphertext = await encryptForContact(
+        userText,
+        keys.messagingPrivateKey,
+        targetPubKey
+      );
+    } else {
+      // Use PFS Ratchet for real contacts
+      let state = ratchetStates[activeContact.id];
+      if (!state) {
+        await initRatchetForContact(activeContact.id);
+        state = useKryptonStore.getState().ratchetStates[activeContact.id];
+      }
+      if (!state) {
+        alert("Failed to initialize secure connection.");
+        return;
+      }
+
+      const result = await encryptWithPFS(userText, state);
+      ciphertext = result.ciphertext;
+      ratchetIndex = result.ratchetIndex;
+      
+      // Update local state is handled directly in the store, but since encryptWithPFS 
+      // mutates the state object we should re-save it to Zustand.
+      useKryptonStore.setState(s => ({
+        ratchetStates: { ...s.ratchetStates, [activeContact.id]: result.newState }
+      }));
+    }
 
     const newMsg: KryptonMessage = {
       id: Date.now().toString(),
@@ -120,9 +147,9 @@ export default function ChatWindow() {
       decryptedPayload: userText,
       metadataStripped: true,
       routePath: ['node-alpha', 'node-beta', 'node-gamma'],
-      isCryptoTransfer,
-      transferAmount: amount,
-      transferSymbol: symbol
+      ...(isCryptoTransfer && { isCryptoTransfer, transferAmount: amount, transferSymbol: symbol }),
+      ...(ratchetIndex !== undefined && { ratchetIndex }),
+      ...(selfDestructTTL && { selfDestructTTL })
     };
 
     addMessage(newMsg);
