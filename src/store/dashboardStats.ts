@@ -1,4 +1,4 @@
-import type { KryptonMessage, Contact, WalletState, WalletAsset } from '@/types';
+import type { KryptonMessage, Contact } from '@/types';
 
 // ─── Peer Events ───
 export interface PeerEvent {
@@ -16,7 +16,7 @@ export interface NetworkStats {
 
 // ─── Message Analytics ───
 export interface MessageDayBucket {
-  date: string;   // YYYY-MM-DD
+  date: string; // YYYY-MM-DD
   sent: number;
   received: number;
 }
@@ -61,7 +61,7 @@ export function computeDashboardStats(
   let totalCiphertextLen = 0;
   let totalPlaintextLen = 0;
   let deliverySuccess = 0;
-  let deliveryFailed = 0;
+  const deliveryFailed = 0;
 
   for (const msg of messages) {
     const d = new Date(msg.timestamp).toISOString().slice(0, 10);
@@ -96,13 +96,14 @@ export function computeDashboardStats(
   const contactGrowth: { date: string; count: number }[] = [];
   const today = new Date().toISOString().slice(0, 10);
   // Since we don't store addedAt, approximate: all contacts exist as of today
-  contactGrowth.push({ date: today, count: contacts.filter(c => !c.isAi).length });
+  contactGrowth.push({ date: today, count: contacts.filter((c) => !c.isAi).length });
 
   // ── Network stats ──
   const networkStats: NetworkStats = {
     peerEvents,
-    messagesRelayed: messages.filter(m => m.isNetworkRelayed).length,
-    lastSyncTimestamp: peerEvents.length > 0 ? (peerEvents[peerEvents.length - 1]?.timestamp ?? 0) : 0
+    messagesRelayed: messages.filter((m) => m.isNetworkRelayed).length,
+    lastSyncTimestamp:
+      peerEvents.length > 0 ? (peerEvents[peerEvents.length - 1]?.timestamp ?? 0) : 0,
   };
 
   return {
@@ -114,7 +115,7 @@ export function computeDashboardStats(
     identityCreatedAt,
     encryptedRatio: 100, // all messages are E2EE
     pairingFailures: 0,
-    contactGrowth
+    contactGrowth,
   };
 }
 
@@ -135,7 +136,7 @@ export function getTopContacts(
     .slice(0, limit)
     .map(([id, count]) => ({
       contactId: id,
-      contactName: contacts.find(c => c.id === id)?.name || id.slice(0, 10) + '...',
-      messageCount: count
+      contactName: contacts.find((c) => c.id === id)?.name || id.slice(0, 10) + '...',
+      messageCount: count,
     }));
 }

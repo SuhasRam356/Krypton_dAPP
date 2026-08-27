@@ -1,14 +1,55 @@
 import Gun from 'gun';
 import type { PeerEvent } from '@/store/dashboardStats';
-import type { ControlMessage } from '@/types';
+import type { ControlMessage, NetworkPayload } from '@/types';
 
-// TODO: replace with your self-hosted relay (radisk: true) as PEERS[0] for store-and-forward.
-// e.g. 'https://your-relay.onrender.com/gun'
-const PEERS = [
-  'http://localhost:8765/gun'
-];
+type GunPeer = string | { url?: string };
+type GunMapChain = {
+  on: (callback: (data: unknown, id: string) => void) => void;
+  off: () => void;
+};
+type GunChain = {
+  get: (key: string) => GunChain;
+  set: (data: Record<string, string>) => void;
+  map: () => GunMapChain;
+};
+type GunInstance = GunChain & {
+  on: (event: 'hi' | 'bye', callback: (peer: GunPeer) => void) => void;
+};
+type GunFactory = (options: {
+  peers: string[];
+  localStorage: boolean;
+  radisk: boolean;
+}) => GunInstance;
 
-let gunInstance: any = null;
+const GUN_RELAY_PORT = '8765';
+const DEFAULT_LOCAL_PEER = `http://localhost:${GUN_RELAY_PORT}/gun`;
+
+let resolvedPeers: string[] | null = null;
+let gunInstance: GunInstance | null = null;
+
+function resolvePeers(): string[] {
+  const configuredPeers = process.env.NEXT_PUBLIC_GUN_PEERS?.split(',')
+    .map((peer) => peer.trim())
+    .filter(Boolean);
+
+  if (configuredPeers?.length) {
+    return configuredPeers;
+  }
+
+  if (typeof window !== 'undefined') {
+    const { protocol, host } = window.location;
+    if (/^\d+-.*\.e2b\.app$/i.test(host)) {
+      return [`${protocol}//${host.replace(/^\d+-/, `${GUN_RELAY_PORT}-`)}/gun`];
+    }
+  }
+
+  return [DEFAULT_LOCAL_PEER];
+}
+
+function getPeerUrl(peer: GunPeer): string {
+  if (typeof peer === 'string') return peer;
+  return peer.url ?? 'unknown';
+}
 
 // ── Peer event listeners — the store/dashboard subscribes to these ──
 type PeerEventCallback = (event: PeerEvent) => void;
@@ -22,14 +63,17 @@ export const onPeerEvent = (cb: PeerEventCallback) => {
   };
 };
 
-export const getPeers = () => PEERS;
+export const getPeers = () => {
+  resolvedPeers ??= resolvePeers();
+  return resolvedPeers;
+};
 
 // ── Relay connectivity tracking ──
-let _isRelayConnected = false;
+let relayConnected = false;
 type ConnectivityCallback = (connected: boolean) => void;
 const connectivityListeners: ConnectivityCallback[] = [];
 
-export const isRelayConnected = () => _isRelayConnected;
+export const isRelayConnected = () => relayConnected;
 
 export const onConnectivityChange = (cb: ConnectivityCallback) => {
   connectivityListeners.push(cb);
@@ -39,28 +83,36 @@ export const onConnectivityChange = (cb: ConnectivityCallback) => {
   };
 };
 
+function emitConnectivity(connected: boolean, peer: GunPeer) {
+  const url = getPeerUrl(peer);
+  relayConnected = connected;
+  connectivityListeners.forEach((cb) => cb(connected));
+
+  const evt: PeerEvent = {
+    url,
+    status: connected ? 'connected' : 'disconnected',
+    timestamp: Date.now(),
+  };
+  peerEventListeners.forEach((cb) => cb(evt));
+}
+
 export const getGun = () => {
   if (!gunInstance) {
-    gunInstance = Gun({
-      peers: PEERS,
+    const createGun = Gun as unknown as GunFactory;
+    gunInstance = createGun({
+      peers: getPeers(),
       localStorage: false, // We handle our own persistence via Zustand
-      radisk: false
+      radisk: false,
     });
-    gunInstance.on('hi', (peer: any) => {
-      const url = peer?.url || peer || 'unknown';
-      console.log('[gun] connected to peer', url);
-      _isRelayConnected = true;
-      connectivityListeners.forEach(cb => cb(true));
-      const evt: PeerEvent = { url, status: 'connected', timestamp: Date.now() };
-      peerEventListeners.forEach(cb => cb(evt));
+
+    gunInstance.on('hi', (peer) => {
+      console.log('[gun] connected to peer', getPeerUrl(peer));
+      emitConnectivity(true, peer);
     });
-    gunInstance.on('bye', (peer: any) => {
-      const url = peer?.url || peer || 'unknown';
-      console.log('[gun] disconnected from peer', url);
-      _isRelayConnected = false;
-      connectivityListeners.forEach(cb => cb(false));
-      const evt: PeerEvent = { url, status: 'disconnected', timestamp: Date.now() };
-      peerEventListeners.forEach(cb => cb(evt));
+
+    gunInstance.on('bye', (peer) => {
+      console.log('[gun] disconnected from peer', getPeerUrl(peer));
+      emitConnectivity(false, peer);
     });
   }
   return gunInstance;
@@ -68,73 +120,71 @@ export const getGun = () => {
 
 // Tracks the currently-active inbox subscription so we can unsubscribe cleanly
 // before resubscribing under a new identity (avoids duplicate listeners / leaks).
-let activeInboxNode: any = null;
+let activeInboxMap: GunMapChain | null = null;
 
 /**
  * Subscribe to messages sent to this user's Krypton ID.
  * This acts as the "Inbox" node for a given identity.
- * Now also handles control messages (UNSEND signals).
  */
 export const subscribeToInbox = (
   kryptonId: string,
-  onMessageReceived: (message: any) => void,
-  onControlMessage?: (ctrl: ControlMessage) => void
+  onMessageReceived: (message: NetworkPayload) => void,
+  onLegacyControlMessage?: (ctrl: ControlMessage) => void
 ) => {
   const gun = getGun();
 
-  if (activeInboxNode) {
-    activeInboxNode.map().off();
-    activeInboxNode = null;
+  if (activeInboxMap) {
+    activeInboxMap.off();
+    activeInboxMap = null;
   }
 
-  const inboxNode = gun.get(`krypton_inbox_${kryptonId}`);
-  activeInboxNode = inboxNode;
+  const inboxMap = gun.get(`krypton_inbox_${kryptonId}`).map();
+  activeInboxMap = inboxMap;
 
-  inboxNode.map().on((data: any, id: string) => {
-    if (data && data.payloadStr) {
+  inboxMap.on((data) => {
+    if (!data || typeof data !== 'object') return;
+
+    const record = data as Record<string, unknown>;
+    if (typeof record.payloadStr === 'string') {
       try {
-        const msg = JSON.parse(data.payloadStr);
-        // Route control messages separately
-        if (msg.type === 'UNSEND' && onControlMessage) {
-          onControlMessage(msg as ControlMessage);
+        const message = JSON.parse(record.payloadStr) as NetworkPayload;
+        if (message.type === 'UNSEND' && onLegacyControlMessage) {
+          onLegacyControlMessage(message as ControlMessage);
         } else {
-          onMessageReceived(msg);
+          onMessageReceived(message);
         }
-      } catch (e) {
-        console.error("Failed to parse incoming Gun.js message", e);
+      } catch (error) {
+        console.error('Failed to parse incoming Gun.js message', error);
       }
-    } else if (data && data.id) {
-      // Fallback for older messages
-      onMessageReceived(data);
+      return;
+    }
+
+    // Fallback for older messages that were written directly into Gun.
+    if (typeof record.id === 'string') {
+      onMessageReceived(record as NetworkPayload);
     }
   });
+
+  return () => {
+    inboxMap.off();
+    if (activeInboxMap === inboxMap) {
+      activeInboxMap = null;
+    }
+  };
 };
 
 /**
  * Send an encrypted payload to a recipient's inbox, keyed by their Krypton ID.
- * Returns true if sent, false if relay is offline (caller should queue).
+ * Returns true if a relay connection is currently known, false if the caller should queue.
  */
-export const sendToNetwork = (recipientKryptonId: string, encryptedPayload: any): boolean => {
+export const sendToNetwork = (
+  recipientKryptonId: string,
+  encryptedPayload: NetworkPayload
+): boolean => {
   const gun = getGun();
   const inboxNode = gun.get(`krypton_inbox_${recipientKryptonId}`);
 
-  // Gun.js does not support nested arrays natively. We must stringify the payload.
+  // Gun.js does not support nested arrays natively. We stringify the payload.
   inboxNode.set({ payloadStr: JSON.stringify(encryptedPayload) });
-  return _isRelayConnected;
+  return relayConnected;
 };
-
-/**
- * Send an "unsend" control message to a recipient, telling them to tombstone a message.
- */
-export const sendUnsendSignal = (recipientKryptonId: string, messageId: string, senderKryptonId: string) => {
-  const ctrl: ControlMessage = {
-    type: 'UNSEND',
-    messageId,
-    sender: senderKryptonId,
-    timestamp: Date.now()
-  };
-  const gun = getGun();
-  const inboxNode = gun.get(`krypton_inbox_${recipientKryptonId}`);
-  inboxNode.set({ payloadStr: JSON.stringify(ctrl) });
-};
-

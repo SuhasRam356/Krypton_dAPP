@@ -32,6 +32,7 @@
 - [Technology Stack](#-technology-stack)
 - [Project Structure](#-project-structure)
 - [Getting Started](#-getting-started)
+- [Quality Checks](#-quality-checks)
 - [How It Works](#-how-it-works)
   - [Identity & Key Generation](#1-identity--key-generation)
   - [End-to-End Encryption](#2-end-to-end-encryption)
@@ -58,31 +59,33 @@
 
 - **No central server** ever sees your messages in plaintext.
 - **Your identity IS your public key** — eliminating the entire class of key-pairing bugs that plague traditional E2EE messengers.
-- **Crypto transfers happen inside the chat** — like ADAMANT Messenger, but with onion-style routing metadata stripping.
+- **Crypto transfer notes happen inside chat**, while real Sepolia ETH transfers live in the Wallet page. Onion-routing language in this repo is demo/inspired metadata, not production multi-hop routing.
 
 Krypton draws design inspiration from:
 
-| Project | What Krypton Borrows |
-|---------|---------------------|
-| **Session** | Krypton ID format (`05` + hex pubkey), no phone/email required |
-| **ADAMANT** | BIP39 mnemonic-based identity, in-chat crypto transfers |
-| **Signal** | Curve25519 key exchange, E2EE by default |
-| **Brave Browser** | Shields UP, tracker blocking, privacy-first Web3 browsing |
-| **Status** | Ethereum wallet integration, decentralized chat |
+| Project           | What Krypton Borrows                                           |
+| ----------------- | -------------------------------------------------------------- |
+| **Session**       | Krypton ID format (`05` + hex pubkey), no phone/email required |
+| **ADAMANT**       | BIP39 mnemonic-based identity, in-chat crypto transfers        |
+| **Signal**        | Curve25519 key exchange, E2EE by default                       |
+| **Brave Browser** | Shields UP, tracker blocking, privacy-first Web3 browsing      |
+| **Status**        | Ethereum wallet integration, decentralized chat                |
 
 ---
 
 ## ✨ Key Features
 
 ### 🔒 End-to-End Encrypted Messaging
+
 - Every message is encrypted using **Curve25519 + XSalsa20-Poly1305** (via libsodium)
-- **Perfect Forward Secrecy (PFS):** Uses an HKDF-style symmetric key ratchet (BLAKE2b) to rotate keys per message.
-- **Self-Destruct & Unsend:** Supports disappearing messages with customizable TTLs and real-time message unsending (tombstoning).
-- **Offline Queue:** Safely spools messages when the network relay drops and auto-flushes upon reconnection.
+- **Forward-secrecy demo ratchet:** Uses a bounded HKDF-style symmetric ratchet (BLAKE2b) to rotate per-message keys. This is not a production Signal Double Ratchet.
+- **Self-Destruct & Encrypted Unsend:** Supports disappearing messages with customizable TTLs and encrypted unsend control messages.
+- **Offline Queue:** Spools outgoing messages when the relay is offline and retries on reconnection.
 - Zero-knowledge architecture — the relay never sees plaintext
 - Krypton ID = Public Key — no separate key exchange step required
 
 ### 📊 Real-Time Analytics Dashboard
+
 - **P2P Network Health** — live relay status, peer count over time
 - **Messaging Analytics** — volume charts, delivery stats, encryption overhead
 - **Portfolio Analytics** — asset allocation donut chart, transfer history
@@ -90,13 +93,15 @@ Krypton draws design inspiration from:
 - **Contact Growth** — identity timeline with verified contact list
 
 ### 💰 Integrated Crypto Wallet
+
 - BIP39 mnemonic-derived Ethereum wallet
 - MetaMask integration for real on-chain balances
-- **Real On-Chain Transfers:** Supports broadcasting real Ethers.js transactions on the Sepolia Testnet directly within the chat UI.
-- In-chat crypto transfers (ADAMANT-style)
+- **Real On-Chain Transfers:** Supports broadcasting real Ethers.js transactions on the Sepolia Testnet from the Wallet page; chat transfer cards are encrypted notes.
+- Encrypted in-chat transfer notes (ADAMANT-inspired demo flow)
 - QR code receive address
 
 ### 🌐 Brave-Style Web3 Browser
+
 - Multiple tab support with tab management
 - "Shields UP" privacy protection with tracker blocking stats
 - Secure address bar with HTTPS padlock indicator
@@ -104,11 +109,13 @@ Krypton draws design inspiration from:
 - Support for `krypton://` internal protocol
 
 ### 👥 Decentralized Contact Management
-- Add contacts by scanning QR codes or pasting Krypton IDs
+
+- Add contacts by pasting Krypton IDs shared from the Settings QR/code block
 - Auto-discovery of contacts from incoming messages
 - Every contact is cryptographically verified by default
 
 ### ⚙️ Identity & Settings
+
 - BIP39 mnemonic generation and backup
 - QR code for easy Krypton ID sharing
 - Full key information display
@@ -123,7 +130,7 @@ The following diagram shows how all the components of Krypton interact:
 graph TB
     subgraph Client["🖥️ Client (Next.js App)"]
         UI["React UI Layer"]
-        Store["Zustand Store<br/>(Persisted to localStorage)"]
+        Store["Zustand Store<br/>(Encrypted vault in localStorage)"]
         Crypto["Crypto Module<br/>(keys.ts, encryption.ts)"]
         Network["Network Module<br/>(network.ts → Gun.js)"]
         Dashboard["Dashboard Analytics<br/>(dashboardStats.ts)"]
@@ -216,26 +223,28 @@ sequenceDiagram
 
 ### Key Architecture Decisions
 
-| Decision | Rationale |
-|----------|-----------|
-| **Krypton ID = Public Key** | Eliminates key-pairing bugs entirely. The identity string itself IS the encryption key — no separate "public key" field to go stale or get mismatched. |
-| **Gun.js for P2P** | Decentralized, no central server dependency. Supports store-and-forward with self-hosted relays. |
-| **Zustand + localStorage** | Lightweight state management with automatic persistence. Custom serialization handles `Uint8Array` round-tripping. |
-| **Separate chat identity from wallet** | MetaMask connecting/switching only updates the linked wallet. Chat identity (Krypton ID) never changes, preventing resubscription bugs. |
-| **Self-hosted relay** | Public Gun relays are unreliable. A dedicated relay ensures message delivery and provides a viva-ready talking point about network infrastructure. |
+| Decision                               | Rationale                                                                                                                                              |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Krypton ID = Public Key**            | Eliminates key-pairing bugs entirely. The identity string itself IS the encryption key — no separate "public key" field to go stale or get mismatched. |
+| **Gun.js for P2P**                     | Decentralized, no central server dependency. Supports store-and-forward with self-hosted relays.                                                       |
+| **Zustand + encrypted local vault**    | Lightweight state management with PIN-derived encrypted persistence. Custom serialization handles `Uint8Array` round-tripping.                         |
+| **Separate chat identity from wallet** | MetaMask connecting/switching only updates the linked wallet. Chat identity (Krypton ID) never changes, preventing resubscription bugs.                |
+| **Self-hosted relay**                  | Public Gun relays are unreliable. A dedicated relay ensures message delivery and provides a viva-ready talking point about network infrastructure.     |
 
 ---
 
 ## 📸 Screenshots
 
 ### Encrypted Messenger
-Real-time E2E encrypted chat with onion routing metadata, encryption hash display, and in-chat crypto transfer support.
+
+Real-time E2E encrypted chat with demo routing metadata, encryption hash display, self-destruct timers, unsend tombstones, and encrypted transfer-note cards.
 
 ![Encrypted Messenger](docs/screenshots/chat.png)
 
 ---
 
 ### Analytics Dashboard — Network Health
+
 Live P2P relay status indicators, active peer count over time, and top-level stat cards.
 
 ![Dashboard — P2P Network Health](docs/screenshots/dashboard_top.png)
@@ -243,13 +252,15 @@ Live P2P relay status indicators, active peer count over time, and top-level sta
 ---
 
 ### Analytics Dashboard — Messaging & Portfolio
-Message volume charts (sent vs received), most active contacts, delivery stats, asset allocation donut chart, and in-chat transfer history.
+
+Message volume charts (sent vs received), most active contacts, delivery stats, asset allocation donut chart, and encrypted in-chat transfer-note history.
 
 ![Dashboard — Messaging & Portfolio Analytics](docs/screenshots/dashboard_mid.png)
 
 ---
 
 ### Analytics Dashboard — Security & Contacts
+
 Cryptographic key information, E2EE coverage invariant, pairing failure count, contact list with verification status, and contact growth chart.
 
 ![Dashboard — Security & Contact Growth](docs/screenshots/dashboard_bottom.png)
@@ -257,6 +268,7 @@ Cryptographic key information, E2EE coverage invariant, pairing failure count, c
 ---
 
 ### Crypto Wallet
+
 BIP39-derived Ethereum wallet with MetaMask integration, send/receive modals, QR code, and AI portfolio analyzer.
 
 ![Crypto Wallet](docs/screenshots/wallet.png)
@@ -264,6 +276,7 @@ BIP39-derived Ethereum wallet with MetaMask integration, send/receive modals, QR
 ---
 
 ### Web3 Browser
+
 Brave-style decentralized browser with multiple tabs, Shields UP privacy protection, tracker blocking stats, and a beautiful start page.
 
 ![Web3 Browser](docs/screenshots/browser.png)
@@ -271,6 +284,7 @@ Brave-style decentralized browser with multiple tabs, Shields UP privacy protect
 ---
 
 ### Settings & Identity
+
 Krypton ID display with QR code for sharing, BIP39 mnemonic backup, and key information.
 
 ![Settings](docs/screenshots/settings.png)
@@ -278,7 +292,8 @@ Krypton ID display with QR code for sharing, BIP39 mnemonic backup, and key info
 ---
 
 ### Contact Management
-Add contacts by QR code or Krypton ID paste. All contacts are cryptographically verified by default since ID = Key.
+
+Add contacts by pasting Krypton IDs shared from Settings. All contacts are cryptographically verified by default since ID = Key.
 
 ![Contacts](docs/screenshots/contacts.png)
 
@@ -286,19 +301,19 @@ Add contacts by QR code or Krypton ID paste. All contacts are cryptographically 
 
 ## 🛠 Technology Stack
 
-| Layer | Technology | Purpose |
-|-------|-----------|---------|
-| **Frontend Framework** | Next.js 16.3 (App Router) | Server/client rendering, routing, API routes |
-| **Language** | TypeScript 5.x | Type safety across the entire codebase |
-| **State Management** | Zustand 5.x | Lightweight store with `persist` middleware for localStorage |
-| **Styling** | Tailwind CSS 4.x | Utility-first CSS with glassmorphism design system |
-| **Encryption** | libsodium-wrappers + tweetnacl | Curve25519 key exchange, XSalsa20-Poly1305 authenticated encryption |
-| **P2P Networking** | Gun.js | Decentralized data sync, store-and-forward relay |
-| **Blockchain** | Ethers.js 6.x | Ethereum wallet derivation, MetaMask provider, on-chain balance |
-| **Key Derivation** | @scure/bip39 + @scure/bip32 | BIP39 mnemonic generation, deterministic key derivation |
-| **Charts** | Recharts | AreaChart, BarChart, PieChart for the analytics dashboard |
-| **QR Codes** | qrcode.react | QR code generation for Krypton ID and wallet address sharing |
-| **Validation** | Zod 4.x | Runtime schema validation for wallet assets and addresses |
+| Layer                  | Technology                              | Purpose                                                               |
+| ---------------------- | --------------------------------------- | --------------------------------------------------------------------- |
+| **Frontend Framework** | Next.js 16.3 (App Router)               | Server/client rendering, routing, API routes                          |
+| **Language**           | TypeScript 5.x                          | Type safety across the entire codebase                                |
+| **State Management**   | Zustand 5.x                             | Lightweight store with encrypted local vault persistence              |
+| **Styling**            | Tailwind CSS 4.x                        | Utility-first CSS with glassmorphism design system                    |
+| **Encryption**         | libsodium-wrappers + tweetnacl          | Curve25519 key exchange, XSalsa20-Poly1305 authenticated encryption   |
+| **P2P Networking**     | Gun.js                                  | Decentralized data sync, store-and-forward relay                      |
+| **Blockchain**         | Ethers.js 6.x                           | Ethereum wallet derivation, MetaMask provider, on-chain balance       |
+| **Key Derivation**     | @scure/bip39 + ethers Wallet.fromPhrase | BIP39 mnemonic generation, deterministic identity and wallet recovery |
+| **Charts**             | Recharts                                | AreaChart, BarChart, PieChart for the analytics dashboard             |
+| **QR Codes**           | qrcode.react                            | QR code generation for Krypton ID and wallet address sharing          |
+| **Validation**         | Zod 4.x                                 | Runtime schema validation for wallet assets and addresses             |
 
 ---
 
@@ -363,8 +378,8 @@ krypton-app/
 
 ### Prerequisites
 
-- **Node.js** ≥ 18.x
-- **npm** ≥ 9.x
+- **Node.js** ≥ 20.9.0
+- **npm** ≥ 10.x
 - A modern browser (Chrome, Edge, Firefox, Brave)
 
 ### Installation
@@ -378,7 +393,7 @@ cd krypton-app
 npm install
 
 # 3. Start the self-hosted Gun relay (in a separate terminal)
-node relay.js
+npm run relay
 # Output: Gun relay running on http://localhost:8765/gun
 
 # 4. Start the development server
@@ -395,11 +410,24 @@ npm run dev
    - Open a second browser window (or Incognito/Private mode)
    - Clear localStorage if you have old data: DevTools → Application → Local Storage → Clear
    - Each instance gets its own unique identity
-   - Copy/scan each other's Krypton ID via the QR code in Settings
+   - Copy each other's Krypton ID from Settings
    - Add each other as contacts in the Contacts section
    - Start sending encrypted messages!
 
 > **⚠️ Important:** If you have old localStorage data from a previous version, delete it first. Old identities may not have the `kryptonId` field and will break the app.
+
+---
+
+## ✅ Quality Checks
+
+```bash
+npm run typecheck  # TypeScript strict mode
+npm run lint       # Next.js + TypeScript ESLint
+npm run test       # Vitest unit tests for crypto/vault/stats
+npm run build      # Production build
+```
+
+GitHub Actions runs the same checks on pushes and pull requests.
 
 ---
 
@@ -417,7 +445,7 @@ BIP39 Mnemonic (12 words)
     │       ├──→ First 32 bytes → Curve25519 Keypair (NaCl box)
     │       │       │
     │       │       ├──→ Public Key  → Krypton ID: "05" + hex(publicKey)
-    │       │       └──→ Private Key → Stored in Zustand (persisted)
+    │       │       └──→ Private Key → Stored in the PIN-encrypted local vault
     │       │
     │       └──→ HD Derivation (BIP44) → Ethereum Wallet
     │               │
@@ -435,25 +463,27 @@ Every message goes through this encryption pipeline:
 
 ```typescript
 // Encryption (sender side)
-const nonce = sodium.randombytes_buf(24);           // Random 24-byte nonce
-const ciphertext = sodium.crypto_box_easy(          // XSalsa20-Poly1305
-    plaintext,                                       // Your message
-    nonce,                                           // Unique per message
-    recipientPublicKey,                              // Derived from their Krypton ID
-    senderPrivateKey                                 // Your secret key
+const nonce = sodium.randombytes_buf(24); // Random 24-byte nonce
+const ciphertext = sodium.crypto_box_easy(
+  // XSalsa20-Poly1305
+  plaintext, // Your message
+  nonce, // Unique per message
+  recipientPublicKey, // Derived from their Krypton ID
+  senderPrivateKey // Your secret key
 );
 // Result: base64(nonce || ciphertext)
 
 // Decryption (receiver side)
 const plaintext = sodium.crypto_box_open_easy(
-    ciphertext,
-    nonce,
-    senderPublicKey,                                 // Derived from sender's Krypton ID
-    recipientPrivateKey                              // Your secret key
+  ciphertext,
+  nonce,
+  senderPublicKey, // Derived from sender's Krypton ID
+  recipientPrivateKey // Your secret key
 );
 ```
 
 The encryption algorithm used is **NaCl `crypto_box`**, which provides:
+
 - **Confidentiality** via XSalsa20 stream cipher
 - **Authentication** via Poly1305 MAC
 - **Key exchange** via Curve25519 ECDH
@@ -483,12 +513,12 @@ Each user has an "inbox" node in the Gun graph: `krypton_inbox_{kryptonId}`. Whe
 
 The wallet system is **completely decoupled** from chat identity:
 
-| Aspect | Chat Identity | Wallet |
-|--------|--------------|--------|
-| **Key source** | Curve25519 from BIP39 seed | HD derivation from same mnemonic |
-| **ID format** | `05` + hex(pubkey) | `0x` + ETH address |
-| **Can change?** | Never | Yes (MetaMask override) |
-| **Used for** | Message routing & encryption | Crypto transfers only |
+| Aspect          | Chat Identity                | Wallet                                        |
+| --------------- | ---------------------------- | --------------------------------------------- |
+| **Key source**  | Curve25519 from BIP39 seed   | HD derivation from same mnemonic              |
+| **ID format**   | `05` + hex(pubkey)           | `0x` + ETH address                            |
+| **Can change?** | Never                        | Yes (MetaMask override)                       |
+| **Used for**    | Message routing & encryption | Wallet transfers and encrypted transfer notes |
 
 MetaMask connecting only updates the displayed wallet address — it **never** touches the Krypton ID or resubscribes the chat inbox.
 
@@ -501,14 +531,16 @@ MetaMask connecting only updates the displayed wallet address — it **never** t
 **File:** `src/components/ChatWindow.tsx`
 
 The messenger provides:
+
 - **Contact sidebar** with real-time last-message timestamps
 - **E2E encrypted message display** with encryption hash preview
-- **In-chat crypto transfers** — send KRYP tokens directly within conversations
-- **AI assistant** — Krypton AI contact for crypto/security questions (via OpenRouter API)
+- **Encrypted transfer-note cards** — record private KRYP-style transfer notes in conversations
+- **AI assistant** — optional cloud-assisted Krypton AI contact for crypto/security questions (via OpenRouter API; not E2EE-private)
 - **Typing indicators** with animated dots
 - **Auto-scroll** to newest messages
 
 Each message displays:
+
 - 🔒 Encrypted hash (first 16 chars of ciphertext)
 - Decrypted plaintext content
 - Timestamp
@@ -521,21 +553,25 @@ Each message displays:
 Five comprehensive analytics sections, all computed from live store data:
 
 #### Section 1: P2P Network Health
+
 - **Live relay peer status** — green/red indicator per peer URL, driven by `gun.on('hi'/'bye')` events
 - **Active peer count over time** — area chart tracking connections
 - **Messages relayed count** and **last sync timestamp**
 
 #### Section 2: Messaging Analytics
+
 - **Message volume bar chart** — sent vs received, bucketed by day
 - **Most active contacts** — ranked with progress bars
 - **Delivery success/failure counts**
 - **E2EE overhead ratio** — ciphertext size ÷ plaintext size (demonstrates encryption cost)
 
 #### Section 3: Portfolio Analytics
+
 - **Asset allocation donut chart** — ETH, KRYP, USDC in USD value
-- **In-chat transfer history** — aggregated from `isCryptoTransfer` messages
+- **In-chat transfer-note history** — aggregated from `isCryptoTransfer` messages
 
 #### Section 4: Security & Cryptography
+
 - **Key type**: Curve25519 (NaCl box XSalsa20-Poly1305)
 - **Identity age**: Time since key generation
 - **E2EE coverage**: 100% — demonstrated invariant
@@ -543,6 +579,7 @@ Five comprehensive analytics sections, all computed from live store data:
 - **Full Krypton ID display** (selectable for copy)
 
 #### Section 5: Identity & Contact Growth
+
 - **Current contacts** with verified status badges
 - **Contact growth area chart** over time
 
@@ -554,7 +591,7 @@ Five comprehensive analytics sections, all computed from live store data:
 - **MetaMask integration** — connect to override wallet address and fetch real on-chain balance
 - **Send modal** — enter recipient address and amount
 - **Receive modal** — displays your address as a QR code
-- **AI Portfolio Analyzer** — sends your holdings to Krypton AI for a brief analysis
+- **AI Portfolio Analyzer** — optionally sends portfolio data to the configured AI provider for a brief analysis
 - **RPC error handling** — graceful fallback when MetaMask points to an offline network
 
 ### 🌐 Web3 Browser
@@ -562,6 +599,7 @@ Five comprehensive analytics sections, all computed from live store data:
 **File:** `src/components/Web3Browser.tsx`
 
 A Brave-inspired secure browser with:
+
 - **Multiple tabs** — open, close, and switch between tabs
 - **New Tab start page** (`krypton://newtab`) showing:
   - Total trackers blocked
@@ -581,7 +619,7 @@ A Brave-inspired secure browser with:
 
 **File:** `src/app/contacts/page.tsx`
 
-- **Add by Krypton ID** — paste or scan QR code
+- **Add by Krypton ID** — paste a valid `05`-prefixed public key
 - **Auto-discovery** — incoming messages from unknown senders automatically create contacts
 - **Contact list** with avatar, name, truncated ID
 - **Remove contacts** with confirmation
@@ -602,33 +640,33 @@ A Brave-inspired secure browser with:
 
 ### What Krypton Protects Against
 
-| Threat | Protection |
-|--------|-----------|
-| **Message interception** | All messages encrypted with Curve25519 + XSalsa20-Poly1305 before leaving the client |
-| **Relay eavesdropping** | The Gun relay only sees ciphertext — never plaintext |
-| **Key-pairing attacks** | Krypton ID = Public Key — impossible to associate wrong key with wrong identity |
-| **Identity spoofing** | Each message can be verified against the sender's Krypton ID (their public key) |
-| **Metadata collection** | Route path metadata is stripped; only sender and recipient IDs are visible |
+| Threat                          | Protection                                                                                                                                   |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Message interception**        | All messages encrypted with Curve25519 + XSalsa20-Poly1305 before leaving the client                                                         |
+| **Relay eavesdropping**         | The Gun relay only sees ciphertext — never plaintext                                                                                         |
+| **Key-pairing attacks**         | Krypton ID = Public Key — impossible to associate wrong key with wrong identity                                                              |
+| **Identity spoofing**           | Each message can be verified against the sender's Krypton ID (their public key)                                                              |
+| **Basic metadata minimization** | Message bodies are encrypted; sender/recipient inbox IDs remain visible to the relay. Route paths are demo metadata, not real onion routing. |
 
 ### What Krypton Does NOT Protect Against (Honest Limitations)
 
-| Limitation | Explanation |
-|-----------|-------------|
-| **Traffic analysis** | An observer can see that two Krypton IDs are communicating, even though message content is hidden. |
-| **Client compromise** | If an attacker has access to your browser's localStorage, they can read your private key and all decrypted messages. |
-| **Future secrecy** | The symmetric ratchet provides forward secrecy (past messages are safe), but full future secrecy requires an asynchronous DH ratchet (X3DH) which isn't possible over a pure P2P relay without a centralized prekey server. |
+| Limitation                       | Explanation                                                                                                                                                                                             |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Traffic analysis**             | An observer can see that two Krypton IDs are communicating, even though message content is hidden.                                                                                                      |
+| **Client compromise / weak PIN** | LocalStorage is encrypted, but malware, an unlocked browser session, devtools access, or a weak PIN can still expose keys and decrypted messages.                                                       |
+| **Forward secrecy limits**       | The current symmetric ratchet is educational and derived from static identity-key ECDH. It is not equivalent to Signal's X3DH/PQXDH + Double Ratchet and should not be treated as production-grade PFS. |
 
 ### Cryptographic Primitives Used
 
-| Primitive | Algorithm | Library | Purpose |
-|-----------|-----------|---------|---------|
-| Key Exchange | Curve25519 ECDH | tweetnacl / libsodium | Shared secret derivation |
-| Forward Secrecy | HKDF (BLAKE2b) | libsodium (`crypto_generichash`) | Derives unique per-message keys (Symmetric Ratchet) |
-| Symmetric Encryption | XSalsa20 | libsodium (`crypto_secretbox_easy`) | Message confidentiality |
-| Authentication | Poly1305 MAC | libsodium (`crypto_box_easy`) | Message integrity |
-| Nonce | 24-byte random | libsodium (`randombytes_buf`) | Prevents replay attacks |
-| Key Derivation | BIP39 + seed slicing | @scure/bip39 | Deterministic identity from mnemonic |
-| Wallet Derivation | BIP44 HD path | ethers.js `Wallet.fromPhrase` | Ethereum address from mnemonic |
+| Primitive            | Algorithm                             | Library                             | Purpose                                                                              |
+| -------------------- | ------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------ |
+| Key Exchange         | Curve25519 ECDH                       | tweetnacl / libsodium               | Shared secret derivation                                                             |
+| Demo Ratchet         | BLAKE2b key derivation                | libsodium (`crypto_generichash`)    | Derives unique per-message symmetric keys; not a full Double Ratchet                 |
+| Symmetric Encryption | XSalsa20                              | libsodium (`crypto_secretbox_easy`) | Message confidentiality                                                              |
+| Authentication       | Poly1305 MAC                          | libsodium (`crypto_box_easy`)       | Message integrity                                                                    |
+| Nonce                | 24-byte random                        | libsodium (`randombytes_buf`)       | Prevents nonce reuse; replay handling is enforced by message IDs and envelope checks |
+| Key Derivation       | BIP39 + deterministic seed derivation | @scure/bip39 + ethers               | Deterministic identity and wallet recovery from mnemonic                             |
+| Wallet Derivation    | BIP44 HD path                         | ethers.js `Wallet.fromPhrase`       | Ethereum address from mnemonic                                                       |
 
 ---
 
@@ -640,48 +678,62 @@ Krypton uses a self-hosted Gun.js relay for reliable message delivery. Public Gu
 
 ```bash
 # Start the relay (from the krypton-app directory)
-node relay.js
+npm run relay
 ```
 
 This starts a minimal Gun relay on `http://localhost:8765/gun`.
 
 ### How the Relay Works
 
-```javascript
-// relay.js
-const Gun = require('gun');
-const server = require('http').createServer().listen(8765);
-const gun = Gun({ web: server });
-```
+`relay.js` starts a small Gun relay with:
+
+- WebSocket endpoint: `/gun`
+- Health endpoint: `/health`
+- Optional Radisk persistence under `GUN_DATA_DIR` (defaults to `radata`)
+- CORS configured by `RELAY_CORS_ORIGIN` (defaults to `*` for easy local/device testing)
 
 The relay:
+
 1. Accepts WebSocket connections from Gun.js clients
-2. Syncs data between all connected peers
-3. Provides store-and-forward — if Bob is offline when Alice sends, the relay holds the data until Bob reconnects
+2. Syncs data between connected peers
+3. Provides best-effort store-and-forward behavior when Radisk persistence is enabled
 
 ### Changing the Relay URL
 
-To point to a different relay (e.g., a deployed one on Render):
+To point the browser client to one or more deployed relays:
 
-```typescript
-// src/crypto/network.ts
-const PEERS = [
-  'https://your-relay.onrender.com/gun'  // Replace with your URL
-];
+```bash
+# .env.local
+NEXT_PUBLIC_GUN_PEERS=https://your-relay.onrender.com/gun,https://backup-relay.example.com/gun
 ```
 
 ---
 
 ## 🔐 Environment Variables
 
-Create a `.env.local` file in the project root:
+Create a `.env.local` file in the project root or copy the template:
 
 ```bash
-# Required for the AI assistant feature (Krypton AI contact)
-OPENROUTER_API_KEY=sk-or-v1-your-key-here
+cp .env.example .env.local
 ```
 
-> **Note:** The AI assistant is optional. The rest of the app (messaging, wallet, browser, dashboard) works without it.
+Common variables:
+
+```bash
+# Optional: enables the Krypton AI assistant feature.
+OPENROUTER_API_KEY=sk-or-v1-your-key-here
+OPENROUTER_MODEL=meta-llama/llama-3.1-8b-instruct
+OPENROUTER_HTTP_REFERER=http://localhost:3000
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+
+# Comma-separated Gun relay peers.
+NEXT_PUBLIC_GUN_PEERS=http://localhost:8765/gun
+
+# Optional Sepolia RPC suggested to MetaMask.
+NEXT_PUBLIC_SEPOLIA_RPC_URL=https://rpc.sepolia.org
+```
+
+> **Note:** The AI assistant is optional and not a private E2EE conversation: prompts are sent to the configured AI provider. The rest of the app works without it.
 
 ---
 
@@ -690,17 +742,20 @@ OPENROUTER_API_KEY=sk-or-v1-your-key-here
 Contributions are welcome! Here are some areas where help is needed:
 
 ### Priority: High
-- [ ] **Double Ratchet** — implement ephemeral key rotation for Perfect Forward Secrecy
+
+- [ ] **Audited Double Ratchet** — replace the demo ratchet with X3DH/PQXDH + Double Ratchet or an audited libsignal-style implementation
 - [ ] **Message deletion** — ability to delete messages from the Gun graph
 - [ ] **Offline queue** — queue messages locally when the relay is unreachable
 
 ### Priority: Medium
+
 - [ ] **Group chats** — multi-party encrypted messaging
 - [ ] **File attachments** — encrypted file transfer via the P2P network
 - [ ] **Push notifications** — browser notifications for new messages
 - [ ] **ENS resolution** — resolve `.eth` names in the Web3 browser
 
 ### Priority: Low
+
 - [ ] **Theme customization** — user-selectable color themes
 - [ ] **Message search** — full-text search across decrypted messages
 - [ ] **Contact nicknames** — editable display names for contacts
@@ -712,14 +767,17 @@ Contributions are welcome! Here are some areas where help is needed:
 npm install
 
 # Start relay + dev server
-node relay.js &
+npm run relay &
 npm run dev
 
-# Build for production
-npm run build
+# Format check, typecheck, lint, test, and build
+npm run ci
 
-# Lint
+# Or run each quality gate separately
+npm run typecheck
 npm run lint
+npm run test
+npm run build
 ```
 
 ---
