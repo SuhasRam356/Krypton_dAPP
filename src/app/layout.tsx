@@ -1,11 +1,8 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
 import "./globals.css";
 import Sidebar from "@/components/Sidebar";
 import { WalletProvider } from "@/components/WalletProvider";
 import LockScreen from "@/components/LockScreen";
-
-const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "Krypton dApp",
@@ -19,7 +16,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${inter.className} min-h-screen bg-krypton-dark text-white flex`}>
+      <body className="min-h-screen bg-krypton-dark text-white flex font-sans">
         <LockScreen>
           <WalletProvider>
             <Sidebar />

@@ -363,7 +363,7 @@ krypton-app/
 
 ### Prerequisites
 
-- **Node.js** ≥ 18.x
+- **Node.js** ≥ 20.9.0
 - **npm** ≥ 9.x
 - A modern browser (Chrome, Edge, Firefox, Brave)
 
