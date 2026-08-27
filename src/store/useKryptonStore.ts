@@ -72,10 +72,15 @@ export const useKryptonStore = create<KryptonStore>()(
         // Chat identity is ready the moment keys exist — start listening immediately.
         get().startNetworkSync();
       },
-      loadKeysFromMnemonic: () => {
-        // Implementation for loading existing mnemonic would go here
-        // For now, it just re-generates
-        get().generateKeys();
+      loadKeysFromMnemonic: (mnemonic: string) => {
+        try {
+          const keys = generateKryptonIdentity(mnemonic);
+          set({ keys });
+          get().startNetworkSync();
+        } catch (e) {
+          console.error("Invalid mnemonic", e);
+          throw e; // Let the UI handle the error
+        }
       },
 
       // MetaMask connecting/switching ONLY updates the linked wallet for transfers.
@@ -388,6 +393,15 @@ export const useKryptonStore = create<KryptonStore>()(
     {
       name: 'krypton-storage',
       skipHydration: true, // App will manually trigger hydration after PIN unlock
+      partialize: (state) => ({
+        keys: state.keys,
+        messages: state.messages,
+        contacts: state.contacts,
+        walletState: state.walletState,
+        ratchetStates: state.ratchetStates,
+        offlineQueue: state.offlineQueue,
+        selfDestructTTL: state.selfDestructTTL,
+      }),
       storage: {
         getItem: async (name) => {
           const vaultKey = getVaultKey();

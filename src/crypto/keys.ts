@@ -1,4 +1,4 @@
-import { generateMnemonic, mnemonicToSeedSync } from '@scure/bip39';
+import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { Wallet } from 'ethers';
 import nacl from 'tweetnacl';
@@ -32,9 +32,17 @@ export function fromHex(hex: string): Uint8Array {
  * "linked wallet" for in-app crypto transfers; MetaMask can override the *displayed*
  * wallet address without ever touching chat identity or message routing.
  */
-export function generateKryptonIdentity(): KryptonKeys {
-  // 1. Generate Mnemonic (ADAMANT Style)
-  const mnemonic = generateMnemonic(wordlist);
+export function generateKryptonIdentity(existingMnemonic?: string): KryptonKeys {
+  // 1. Generate Mnemonic (ADAMANT Style) or use existing
+  let mnemonic = existingMnemonic;
+  
+  if (mnemonic) {
+    if (!validateMnemonic(mnemonic, wordlist)) {
+      throw new Error("Invalid recovery phrase.");
+    }
+  } else {
+    mnemonic = generateMnemonic(wordlist);
+  }
   const seed = mnemonicToSeedSync(mnemonic);
 
   // 2. Derive Ethereum Wallet (Status/Web3 Style) — wallet-only, never used for routing.

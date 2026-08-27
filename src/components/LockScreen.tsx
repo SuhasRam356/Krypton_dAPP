@@ -57,6 +57,9 @@ export default function LockScreen({ children }: { children: ReactNode }) {
       // we just call it and it will trigger a state update.
       await useKryptonStore.persist.rehydrate();
       
+      // Manually restart network sync since isNetworkSyncing is no longer persisted
+      useKryptonStore.getState().startNetworkSync();
+
       setIsUnlocked(true);
     } catch (err: unknown) {
       console.error(err);
