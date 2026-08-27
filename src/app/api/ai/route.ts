@@ -41,8 +41,8 @@ export async function POST(req: Request) {
     const data = await response.json();
     return NextResponse.json({ result: data.choices[0].message.content });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('AI Route Error:', error);
-    return NextResponse.json({ error: 'Internal server error', details: error.message }, { status: 500 });
+    return NextResponse.json({ error: 'Internal server error', details: (error as Error).message }, { status: 500 });
   }
 }

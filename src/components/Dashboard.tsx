@@ -57,13 +57,19 @@ function SectionHeader({ title, icon }: { title: string; icon: React.ReactNode }
   );
 }
 
+interface TooltipPayload {
+  name: string;
+  value: number;
+  color?: string;
+}
+
 // ─── Custom recharts tooltip ───
-function CustomTooltip({ active, payload, label }: any) {
+function CustomTooltip({ active, payload, label }: { active?: boolean; payload?: TooltipPayload[]; label?: string }) {
   if (!active || !payload?.length) return null;
   return (
     <div className="bg-[#161b22] border border-gray-700 rounded-lg px-3 py-2 shadow-xl">
       <p className="text-xs text-gray-400 mb-1">{label}</p>
-      {payload.map((p: any, i: number) => (
+      {payload.map((p: TooltipPayload, i: number) => (
         <p key={i} className="text-sm font-bold" style={{ color: p.color }}>{p.name}: {p.value}</p>
       ))}
     </div>
@@ -78,6 +84,12 @@ export default function Dashboard() {
   const [peerEvents, setPeerEvents] = useState<PeerEvent[]>([]);
   const [activePeers, setActivePeers] = useState<Map<string, 'connected' | 'disconnected'>>(new Map());
   const [identityCreatedAt] = useState(() => Date.now()); // approximation
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Subscribe to Gun peer events
   useEffect(() => {
@@ -136,10 +148,10 @@ export default function Dashboard() {
 
   const connectedPeerCount = Array.from(activePeers.values()).filter(s => s === 'connected').length;
   const lastSync = stats.networkStats.lastSyncTimestamp
-    ? `${Math.round((Date.now() - stats.networkStats.lastSyncTimestamp) / 1000)}s ago`
+    ? `${Math.round((currentTime - stats.networkStats.lastSyncTimestamp) / 1000)}s ago`
     : 'N/A';
 
-  const identityAgeMs = Date.now() - identityCreatedAt;
+  const identityAgeMs = currentTime - identityCreatedAt;
   const identityAge = identityAgeMs < 60000 ? `${Math.round(identityAgeMs / 1000)}s`
     : identityAgeMs < 3600000 ? `${Math.round(identityAgeMs / 60000)}m`
     : `${Math.round(identityAgeMs / 3600000)}h`;

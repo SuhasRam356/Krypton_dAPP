@@ -2,7 +2,7 @@
 
 import { useState, useEffect, ReactNode } from 'react';
 import sodium from 'libsodium-wrappers';
-import { generateSalt, deriveKeyFromPin, setVaultKey, getVaultKey } from '@/crypto/vault';
+import { generateSalt, deriveKeyFromPin, setVaultKey } from '@/crypto/vault';
 import { useKryptonStore } from '@/store/useKryptonStore';
 
 export default function LockScreen({ children }: { children: ReactNode }) {
@@ -37,7 +37,7 @@ export default function LockScreen({ children }: { children: ReactNode }) {
 
     try {
       await sodium.ready;
-      let saltStr = localStorage.getItem('krypton-vault-salt');
+      const saltStr = localStorage.getItem('krypton-vault-salt');
       let saltBytes: Uint8Array;
 
       if (isNewDevice || !saltStr) {
@@ -58,7 +58,7 @@ export default function LockScreen({ children }: { children: ReactNode }) {
       await useKryptonStore.persist.rehydrate();
       
       setIsUnlocked(true);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
       setError("Invalid PIN or corrupted vault.");
       setVaultKey(null);

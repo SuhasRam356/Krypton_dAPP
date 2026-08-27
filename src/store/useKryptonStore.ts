@@ -72,7 +72,7 @@ export const useKryptonStore = create<KryptonStore>()(
         // Chat identity is ready the moment keys exist — start listening immediately.
         get().startNetworkSync();
       },
-      loadKeysFromMnemonic: (mnemonic: string) => {
+      loadKeysFromMnemonic: () => {
         // Implementation for loading existing mnemonic would go here
         // For now, it just re-generates
         get().generateKeys();
@@ -95,7 +95,8 @@ export const useKryptonStore = create<KryptonStore>()(
           // If we are the sender, broadcast it to the network — ciphertext only, never plaintext.
           const { keys, selfDestructTTL, isRelayConnected } = get();
           if (keys && msg.sender === keys.kryptonId && !msg.isNetworkRelayed && msg.recipient !== AI_CONTACT_ID) {
-            const { decryptedPayload, ...wireMsg } = msg;
+            const wireMsg = { ...msg };
+            delete wireMsg.decryptedPayload;
 
             // Attach self-destruct TTL if active
             const wireMsgWithTTL = selfDestructTTL
@@ -170,7 +171,8 @@ export const useKryptonStore = create<KryptonStore>()(
         if (offlineQueue.length === 0 || !keys) return;
 
         for (const msg of offlineQueue) {
-          const { decryptedPayload, ...wireMsg } = msg;
+          const wireMsg = { ...msg };
+          delete wireMsg.decryptedPayload;
           sendToNetwork(msg.recipient, { ...wireMsg, isNetworkRelayed: true });
         }
 
@@ -206,7 +208,21 @@ export const useKryptonStore = create<KryptonStore>()(
           }
         };
 
-        subscribeToInbox(keys.kryptonId, async (incomingMsg: any) => {
+        subscribeToInbox(keys.kryptonId, async (rawMsg: Record<string, unknown>) => {
+          const incomingMsg = rawMsg as {
+            id?: string;
+            sender?: string;
+            recipient?: string;
+            encryptedPayload?: string;
+            ratchetIndex?: number;
+            timestamp?: number;
+            type?: 'ONION_ROUTED';
+            isCryptoTransfer?: boolean;
+            transferAmount?: number;
+            transferSymbol?: string;
+            selfDestructTTL?: number;
+          };
+
           if (incomingMsg && incomingMsg.id && incomingMsg.sender && incomingMsg.encryptedPayload) {
             const { contacts, keys, addMessage, addContact } = get();
             if (!keys) return;
@@ -231,7 +247,7 @@ export const useKryptonStore = create<KryptonStore>()(
                 decryptedPayload = plaintext;
                 // Only the recv chain advances here — send chain is untouched, so our own
                 // outgoing counter is never disturbed by incoming traffic.
-                set(s => ({ ratchetStates: { ...s.ratchetStates, [incomingMsg.sender]: { ...pair, recv: newState } } }));
+                set(s => ({ ratchetStates: { ...s.ratchetStates, [incomingMsg.sender as string]: { ...pair, recv: newState } } }));
               } else {
                 // Fallback for non-ratcheted messages
                 decryptedPayload = await decryptFromContact(
@@ -256,25 +272,23 @@ export const useKryptonStore = create<KryptonStore>()(
               });
             }
 
-            const msg: any = {
-              id: incomingMsg.id,
+            const msg: KryptonMessage = {
+              id: incomingMsg.id as string,
               timestamp: incomingMsg.timestamp || Date.now(),
-              sender: incomingMsg.sender,
-              recipient: incomingMsg.recipient,
+              sender: incomingMsg.sender as string,
+              recipient: incomingMsg.recipient as string,
               type: incomingMsg.type || 'ONION_ROUTED',
-              encryptedPayload: incomingMsg.encryptedPayload,
-              isCryptoTransfer: incomingMsg.isCryptoTransfer,
-              transferAmount: incomingMsg.transferAmount,
-              transferSymbol: incomingMsg.transferSymbol,
-              ratchetIndex: incomingMsg.ratchetIndex,
-              selfDestructTTL: incomingMsg.selfDestructTTL,
+              encryptedPayload: incomingMsg.encryptedPayload as string,
+              ...(incomingMsg.isCryptoTransfer && { isCryptoTransfer: true, transferAmount: incomingMsg.transferAmount, transferSymbol: incomingMsg.transferSymbol }),
+              ...(incomingMsg.ratchetIndex !== undefined && { ratchetIndex: incomingMsg.ratchetIndex }),
+              ...(incomingMsg.selfDestructTTL && { selfDestructTTL: incomingMsg.selfDestructTTL }),
               isNetworkRelayed: true,
               metadataStripped: true,
               routePath: ['p2p-relay'],
               decryptedPayload,
             };
 
-            addMessage(msg as KryptonMessage);
+            addMessage(msg);
           }
         }, handleControlMessage);
       },

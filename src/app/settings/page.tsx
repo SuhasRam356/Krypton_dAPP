@@ -44,7 +44,7 @@ export default function SettingsPage() {
           <div className="bg-[#0d1117] border border-gray-700 rounded-xl p-5">
             <label className="block text-xs text-gray-400 uppercase tracking-wider font-semibold mb-2">Krypton ID</label>
             <p className="text-gray-500 text-sm mb-3">
-              Share this with friends so they can message you. It IS your encryption key — there's nothing else to exchange, and it never changes even if you switch or disconnect MetaMask.
+              Share this with friends so they can message you. It IS your encryption key — there&apos;s nothing else to exchange, and it never changes even if you switch or disconnect MetaMask.
             </p>
 
             <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 mb-4">

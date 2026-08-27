@@ -1,4 +1,4 @@
-import type { KryptonMessage, Contact, WalletState, WalletAsset } from '@/types';
+import type { KryptonMessage, Contact } from '@/types';
 
 // ─── Peer Events ───
 export interface PeerEvent {
@@ -61,7 +61,7 @@ export function computeDashboardStats(
   let totalCiphertextLen = 0;
   let totalPlaintextLen = 0;
   let deliverySuccess = 0;
-  let deliveryFailed = 0;
+  const deliveryFailed = 0;
 
   for (const msg of messages) {
     const d = new Date(msg.timestamp).toISOString().slice(0, 10);

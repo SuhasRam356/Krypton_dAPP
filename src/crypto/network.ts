@@ -8,7 +8,7 @@ const PEERS = [
   'http://localhost:8765/gun'
 ];
 
-let gunInstance: any = null;
+let gunInstance: ReturnType<typeof Gun> | null = null;
 
 // ── Peer event listeners — the store/dashboard subscribes to these ──
 type PeerEventCallback = (event: PeerEvent) => void;
@@ -46,16 +46,16 @@ export const getGun = () => {
       localStorage: false, // We handle our own persistence via Zustand
       radisk: false
     });
-    gunInstance.on('hi', (peer: any) => {
-      const url = peer?.url || peer || 'unknown';
+    gunInstance.on('hi', (peer: { url?: string } | string) => {
+      const url = (typeof peer === 'object' ? peer?.url : peer) || 'unknown';
       console.log('[gun] connected to peer', url);
       _isRelayConnected = true;
       connectivityListeners.forEach(cb => cb(true));
       const evt: PeerEvent = { url, status: 'connected', timestamp: Date.now() };
       peerEventListeners.forEach(cb => cb(evt));
     });
-    gunInstance.on('bye', (peer: any) => {
-      const url = peer?.url || peer || 'unknown';
+    gunInstance.on('bye', (peer: { url?: string } | string) => {
+      const url = (typeof peer === 'object' ? peer?.url : peer) || 'unknown';
       console.log('[gun] disconnected from peer', url);
       _isRelayConnected = false;
       connectivityListeners.forEach(cb => cb(false));
@@ -68,6 +68,7 @@ export const getGun = () => {
 
 // Tracks the currently-active inbox subscription so we can unsubscribe cleanly
 // before resubscribing under a new identity (avoids duplicate listeners / leaks).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let activeInboxNode: any = null;
 
 /**
@@ -77,7 +78,7 @@ let activeInboxNode: any = null;
  */
 export const subscribeToInbox = (
   kryptonId: string,
-  onMessageReceived: (message: any) => void,
+  onMessageReceived: (message: Record<string, unknown>) => void,
   onControlMessage?: (ctrl: ControlMessage) => void
 ) => {
   const gun = getGun();
@@ -87,10 +88,10 @@ export const subscribeToInbox = (
     activeInboxNode = null;
   }
 
-  const inboxNode = gun.get(`krypton_inbox_${kryptonId}`);
+  const inboxNode: any = gun.get(`krypton_inbox_${kryptonId}`);
   activeInboxNode = inboxNode;
 
-  inboxNode.map().on((data: any, id: string) => {
+  inboxNode.map().on((data: { payloadStr?: string; id?: string }) => {
     if (data && data.payloadStr) {
       try {
         const msg = JSON.parse(data.payloadStr);
@@ -114,9 +115,9 @@ export const subscribeToInbox = (
  * Send an encrypted payload to a recipient's inbox, keyed by their Krypton ID.
  * Returns true if sent, false if relay is offline (caller should queue).
  */
-export const sendToNetwork = (recipientKryptonId: string, encryptedPayload: any): boolean => {
+export const sendToNetwork = (recipientKryptonId: string, encryptedPayload: Record<string, unknown>): boolean => {
   const gun = getGun();
-  const inboxNode = gun.get(`krypton_inbox_${recipientKryptonId}`);
+  const inboxNode: any = gun.get(`krypton_inbox_${recipientKryptonId}`);
 
   // Gun.js does not support nested arrays natively. We must stringify the payload.
   inboxNode.set({ payloadStr: JSON.stringify(encryptedPayload) });
@@ -134,7 +135,7 @@ export const sendUnsendSignal = (recipientKryptonId: string, messageId: string, 
     timestamp: Date.now()
   };
   const gun = getGun();
-  const inboxNode = gun.get(`krypton_inbox_${recipientKryptonId}`);
+  const inboxNode: any = gun.get(`krypton_inbox_${recipientKryptonId}`);
   inboxNode.set({ payloadStr: JSON.stringify(ctrl) });
 };
 

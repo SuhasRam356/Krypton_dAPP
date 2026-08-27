@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
-import type { KryptonMessage, Contact } from '@/types';
+import type { KryptonMessage } from '@/types';
 import { encryptForContact, encryptWithPFS } from '@/crypto/encryption';
 import { fromHex } from '@/crypto/keys';
 import { useKryptonStore } from '@/store/useKryptonStore';
@@ -42,7 +42,7 @@ export default function ChatWindow() {
   const [showDestructDropdown, setShowDestructDropdown] = useState(false);
 
   // Self-destruct countdown (re-renders every second)
-  const [, setTick] = useState(0);
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -59,7 +59,7 @@ export default function ChatWindow() {
   // Self-destruct ticker — check and delete expired messages every second
   useEffect(() => {
     const interval = setInterval(() => {
-      setTick(t => t + 1); // Force re-render for countdown display
+      setCurrentTime(Date.now());
       const { messages, deleteMessage } = useKryptonStore.getState();
       const now = Date.now();
       for (const msg of messages) {
@@ -93,13 +93,14 @@ export default function ChatWindow() {
     
     // Encrypt the payload using the contact's Krypton ID, which IS their public key
     // (for AI we mock it with our own key since there's no real AI identity).
-    let targetPubKey: Uint8Array;
+    let targetPubKey: Uint8Array | undefined;
     if (activeContact.isAi) {
       targetPubKey = keys.messagingPublicKey;
-    } else {
+    }
+    if (!targetPubKey) {
       try {
         targetPubKey = fromHex(activeContact.id);
-      } catch (err) {
+      } catch {
         alert("Invalid Krypton ID for this contact!");
         return;
       }
@@ -138,7 +139,8 @@ export default function ChatWindow() {
     }
 
     const newMsg: KryptonMessage = {
-      id: Date.now().toString(),
+      id: crypto.randomUUID(),
+      // eslint-disable-next-line react-hooks/purity
       timestamp: Date.now(),
       sender: keys.kryptonId, 
       recipient: activeContact.id,
@@ -176,7 +178,8 @@ export default function ChatWindow() {
           );
           
           const aiMsg: KryptonMessage = {
-            id: (Date.now() + 1).toString(),
+            id: crypto.randomUUID(),
+            // eslint-disable-next-line react-hooks/purity
             timestamp: Date.now() + 1000,
             sender: activeContact.id, 
             recipient: keys.kryptonId,
@@ -204,7 +207,7 @@ export default function ChatWindow() {
 
   // ── Format countdown ──
   const formatCountdown = (destructAt: number): string => {
-    const remaining = Math.max(0, Math.ceil((destructAt - Date.now()) / 1000));
+    const remaining = Math.max(0, Math.ceil((destructAt - currentTime) / 1000));
     if (remaining > 60) return `${Math.floor(remaining / 60)}m ${remaining % 60}s`;
     return `${remaining}s`;
   };

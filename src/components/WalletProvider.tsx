@@ -22,6 +22,16 @@ interface Web3ContextType {
   switchToSepolia: () => Promise<void>;
 }
 
+declare global {
+  interface Window {
+    ethereum?: {
+      on: (eventName: string, handler: (args: unknown) => void) => void;
+      removeListener: (eventName: string, handler: (args: unknown) => void) => void;
+      request: (request: { method: string; params?: unknown[] }) => Promise<unknown>;
+    };
+  }
+}
+
 const Web3Context = createContext<Web3ContextType | null>(null);
 
 import { useKryptonStore } from '@/store/useKryptonStore';
@@ -51,27 +61,33 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   // Initialize provider if MetaMask exists
   useEffect(() => {
-    if (typeof window !== 'undefined' && (window as any).ethereum) {
-      const browserProvider = new ethers.BrowserProvider((window as any).ethereum);
-      setProvider(browserProvider);
+    if (typeof window !== 'undefined' && window.ethereum) {
+      // Create provider
+      const browserProvider = new ethers.BrowserProvider(window.ethereum as ethers.Eip1193Provider);
+      setTimeout(() => setProvider(browserProvider), 0);
 
-      // Handle account changes
-      (window as any).ethereum.on('accountsChanged', (accounts: string[]) => {
-        if (accounts.length > 0) {
-          const newAddress = accounts[0] as string;
+      const handleAccountsChanged = (accounts: unknown) => {
+        const accs = accounts as string[];
+        if (accs.length > 0) {
+          const newAddress = accs[0] as string;
           setAddress(newAddress);
           linkWallet(newAddress);
-          browserProvider.getSigner().then(setSigner);
+          browserProvider.getSigner().then(setSigner).catch(console.error);
         } else {
           setAddress(null);
           setSigner(null);
         }
-      });
+      };
+
+      const handleChainChanged = (newChainIdHex: unknown) => {
+        setChainId(BigInt(newChainIdHex as string));
+      };
+
+      // Handle account changes
+      window.ethereum.on('accountsChanged', handleAccountsChanged);
 
       // Handle chain changes — update chainId instead of reloading
-      (window as any).ethereum.on('chainChanged', (newChainIdHex: string) => {
-        setChainId(BigInt(newChainIdHex));
-      });
+      window.ethereum.on('chainChanged', handleChainChanged);
       
       // Auto-connect if already connected
       browserProvider.listAccounts().then(accounts => {
@@ -81,11 +97,19 @@ export function WalletProvider({ children }: { children: ReactNode }) {
             setAddress(newAddress);
             linkWallet(newAddress);
           }
-          browserProvider.getSigner().then(setSigner);
-          browserProvider.getNetwork().then(net => setChainId(net.chainId));
+          browserProvider.getSigner().then(setSigner).catch(console.error);
+          browserProvider.getNetwork().then(net => setChainId(net.chainId)).catch(console.error);
         }
       }).catch(console.error);
+
+      return () => {
+        if (window.ethereum) {
+          window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
+          window.ethereum.removeListener('chainChanged', handleChainChanged);
+        }
+      };
     }
+    return undefined;
   }, [linkWallet]);
 
   const connect = async () => {
@@ -106,8 +130,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       setAddress(newAddress);
       linkWallet(newAddress);
       setChainId(network.chainId);
-    } catch (err: any) {
-      setError(err.message || "Failed to connect wallet");
+    } catch (err: unknown) {
+      setError((err as Error).message || "Failed to connect wallet");
     } finally {
       setIsConnecting(false);
     }
@@ -145,26 +169,41 @@ export function WalletProvider({ children }: { children: ReactNode }) {
    * Prompt MetaMask to switch to Sepolia testnet.
    */
   const switchToSepolia = async () => {
-    if (typeof window === 'undefined' || !(window as any).ethereum) return;
+    if (typeof window === 'undefined' || !window.ethereum) return;
 
     try {
-      await (window as any).ethereum.request({
+      if (!window.ethereum) throw new Error("No ethereum provider");
+      await window.ethereum.request({
         method: 'wallet_switchEthereumChain',
-        params: [{ chainId: '0xaa36a7' }] // 11155111 in hex
+        params: [{ chainId: '0xaa36a7' }], // 11155111 in hex
       });
-    } catch (switchError: any) {
-      // If Sepolia isn't added to MetaMask, add it
-      if (switchError.code === 4902) {
-        await (window as any).ethereum.request({
-          method: 'wallet_addEthereumChain',
-          params: [{
-            chainId: '0xaa36a7',
-            chainName: 'Sepolia Testnet',
-            nativeCurrency: { name: 'Sepolia ETH', symbol: 'ETH', decimals: 18 },
-            rpcUrls: ['https://rpc.sepolia.org'],
-            blockExplorerUrls: ['https://sepolia.etherscan.io']
-          }]
-        });
+    } catch (switchError: unknown) {
+      const err = switchError as { code: number; message: string };
+      // This error code indicates that the chain has not been added to MetaMask.
+      if (err.code === 4902) {
+        try {
+          if (!window.ethereum) return;
+          await window.ethereum.request({
+            method: 'wallet_addEthereumChain',
+            params: [
+              {
+                chainId: '0xaa36a7',
+                chainName: 'Sepolia test network',
+                nativeCurrency: {
+                  name: 'SepoliaETH',
+                  symbol: 'SEP',
+                  decimals: 18,
+                },
+                rpcUrls: ['https://sepolia.infura.io/v3/'],
+                blockExplorerUrls: ['https://sepolia.etherscan.io'],
+              },
+            ],
+          });
+        } catch (addError) {
+          console.error("Failed to add Sepolia network", addError);
+        }
+      } else {
+        console.error("Failed to switch network", err);
       }
     }
   };

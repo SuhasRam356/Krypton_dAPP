@@ -24,8 +24,8 @@ export default function WalletDashboard() {
   // Fetch real on-chain balance when MetaMask connects
   useEffect(() => {
     if (provider && connectedAddress) {
-      setRpcError(null);
       provider.getBalance(connectedAddress).then(balance => {
+        setRpcError(null);
         const ethBalance = parseFloat(ethers.formatEther(balance));
         updateWalletBalance("ETH", ethBalance);
       }).catch(err => {
@@ -73,7 +73,7 @@ export default function WalletDashboard() {
       } else {
         setAiAnalysis("Error analyzing portfolio. Please try again.");
       }
-    } catch (e) {
+    } catch {
       setAiAnalysis("Failed to connect to Krypton AI.");
     } finally {
       setIsAnalyzing(false);
@@ -96,8 +96,8 @@ export default function WalletDashboard() {
           const bal = await provider.getBalance(connectedAddress);
           updateWalletBalance('ETH', parseFloat(ethers.formatEther(bal)));
         }
-      } catch (err: any) {
-        alert(`Transaction failed: ${err.message}`);
+      } catch (err: unknown) {
+        alert(`Transaction failed: ${(err as Error).message || 'Unknown error'}`);
       } finally {
         setIsSending(false);
       }

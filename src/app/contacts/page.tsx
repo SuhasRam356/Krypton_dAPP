@@ -122,7 +122,7 @@ export default function ContactsPage() {
               </div>
               <div>
                 <label className="block text-xs text-gray-400 uppercase tracking-wider mb-2 font-semibold">Krypton ID</label>
-                <p className="text-gray-500 text-xs mb-2">Get this from your friend's Settings page (or scan their QR code). It's their address and encryption key in one — nothing else to enter.</p>
+                <p className="text-gray-500 text-xs mb-2">Get this from your friend&apos;s Settings page (or scan their QR code). It&apos;s their address and encryption key in one — nothing else to enter.</p>
                 <input 
                   type="text" 
                   value={kryptonId}

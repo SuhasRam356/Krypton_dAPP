@@ -96,7 +96,7 @@ export default function Web3Browser() {
     setShowShields(false);
   };
 
-  const handleIframeLoad = (e: React.SyntheticEvent<HTMLIFrameElement>) => {
+  const handleIframeLoad = () => {
     updateTab(activeTabId, { isLoading: false });
     // Try to get actual hostname if possible, fallback to URL hostname
     try {
