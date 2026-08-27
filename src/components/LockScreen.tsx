@@ -88,15 +88,12 @@ export default function LockScreen({ children }: { children: ReactNode }) {
       setVaultKey(key);
 
       await useKryptonStore.persist.rehydrate();
-      if (!useKryptonStore.persist.hasHydrated()) {
-        throw new Error('Vault hydration failed');
-      }
       useKryptonStore.getState().startNetworkSync();
 
       setIsUnlocked(true);
     } catch (unlockError) {
-      console.error(getErrorMessage(unlockError));
-      setError('Invalid PIN or corrupted vault.');
+      console.error(unlockError);
+      setError('Invalid PIN: ' + getErrorMessage(unlockError));
       setVaultKey(null);
     } finally {
       setIsLoading(false);
