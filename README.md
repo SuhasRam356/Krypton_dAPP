@@ -17,7 +17,7 @@
   <img src="https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript" alt="TypeScript"/>
   <img src="https://img.shields.io/badge/Encryption-Curve25519-green" alt="Encryption"/>
   <img src="https://img.shields.io/badge/Network-Gun.js%20P2P-orange" alt="Gun.js"/>
-  <img src="https://img.shields.io/badge/Wallet-Ethers.js%206-purple" alt="Ethers.js"/>
+  <img src="https://img.shields.io/badge/Web3-Wagmi%20%2B%20Viem-purple" alt="Wagmi"/>
   <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License"/>
 </p>
 
@@ -81,6 +81,7 @@ Krypton draws design inspiration from:
 - **Forward-secrecy demo ratchet:** Uses a bounded HKDF-style symmetric ratchet (BLAKE2b) to rotate per-message keys. This is not a production Signal Double Ratchet.
 - **Self-Destruct & Encrypted Unsend:** Supports disappearing messages with customizable TTLs and encrypted unsend control messages.
 - **Offline Queue:** Spools outgoing messages when the relay is offline and retries on reconnection.
+- **PreKey Bundles (X3DH-lite):** Generates and publishes offline PreKey bundles to the Gun network, allowing secure session establishment even if the recipient is offline.
 - Zero-knowledge architecture — the relay never sees plaintext
 - Krypton ID = Public Key — no separate key exchange step required
 
@@ -94,9 +95,9 @@ Krypton draws design inspiration from:
 
 ### 💰 Integrated Crypto Wallet
 
-- BIP39 mnemonic-derived Ethereum wallet
+- Powered by **Wagmi** and **Viem** for robust, SSR-safe connection state
 - MetaMask integration for real on-chain balances
-- **Real On-Chain Transfers:** Supports broadcasting real Ethers.js transactions on the Sepolia Testnet from the Wallet page; chat transfer cards are encrypted notes.
+- **Real On-Chain Transfers:** Supports broadcasting real Ethereum transactions on the Sepolia Testnet from the Wallet page; chat transfer cards are encrypted notes.
 - Encrypted in-chat transfer notes (ADAMANT-inspired demo flow)
 - QR code receive address
 
@@ -130,8 +131,8 @@ The following diagram shows how all the components of Krypton interact:
 graph TB
     subgraph Client["🖥️ Client (Next.js App)"]
         UI["React UI Layer"]
-        Store["Zustand Store<br/>(Encrypted vault in localStorage)"]
-        Crypto["Crypto Module<br/>(keys.ts, encryption.ts)"]
+        Store["Zustand Store<br/>(Modular Slices, Encrypted vault)"]
+        Crypto["Crypto Module<br/>(keys.ts, encryption.ts, prekeys.ts)"]
         Network["Network Module<br/>(network.ts → Gun.js)"]
         Dashboard["Dashboard Analytics<br/>(dashboardStats.ts)"]
 
@@ -170,15 +171,15 @@ graph TB
     subgraph P2P["🌐 P2P Network"]
         Gun["Gun.js Instance"]
         Relay["Self-Hosted Relay<br/>(localhost:8765)"]
-        Inbox["Gun Node<br/>krypton_inbox_{kryptonId}"]
+        Inbox["Gun Node<br/>krypton_inbox_v2_{SHA256}_{YYYY-MM-DD}"]
 
         Gun --> Relay
         Gun --> Inbox
     end
 
     subgraph Wallet["💰 Wallet Layer"]
-        MM["MetaMask<br/>(Optional)"]
-        Provider["ethers.js Provider"]
+        MM["MetaMask / Injected<br/>(Optional)"]
+        Provider["Wagmi / Viem"]
         Balance["On-Chain Balance"]
 
         MM --> Provider
@@ -227,8 +228,8 @@ sequenceDiagram
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Krypton ID = Public Key**            | Eliminates key-pairing bugs entirely. The identity string itself IS the encryption key — no separate "public key" field to go stale or get mismatched. |
 | **Gun.js for P2P**                     | Decentralized, no central server dependency. Supports store-and-forward with self-hosted relays.                                                       |
-| **Zustand + encrypted local vault**    | Lightweight state management with PIN-derived encrypted persistence. Custom serialization handles `Uint8Array` round-tripping.                         |
-| **Separate chat identity from wallet** | MetaMask connecting/switching only updates the linked wallet. Chat identity (Krypton ID) never changes, preventing resubscription bugs.                |
+| **Zustand Slice Architecture** | The monolithic store is divided into `CryptoSlice`, `NetworkSlice`, `MessageSlice`, and `WalletSlice`, making it highly maintainable while keeping the encrypted local vault persistence. |
+| **Separate chat identity from wallet** | MetaMask connecting/switching only updates the linked wallet via Wagmi hooks. Chat identity (Krypton ID) never changes, preventing resubscription bugs.                |
 | **Self-hosted relay**                  | Public Gun relays are unreliable. A dedicated relay ensures message delivery and provides a viva-ready talking point about network infrastructure.     |
 
 ---
@@ -305,11 +306,11 @@ Add contacts by pasting Krypton IDs shared from Settings. All contacts are crypt
 | ---------------------- | --------------------------------------- | --------------------------------------------------------------------- |
 | **Frontend Framework** | Next.js 16.3 (App Router)               | Server/client rendering, routing, API routes                          |
 | **Language**           | TypeScript 5.x                          | Type safety across the entire codebase                                |
-| **State Management**   | Zustand 5.x                             | Lightweight store with encrypted local vault persistence              |
+| **State Management**   | Zustand 5.x                             | Slice architecture with encrypted local vault persistence              |
 | **Styling**            | Tailwind CSS 4.x                        | Utility-first CSS with glassmorphism design system                    |
-| **Encryption**         | libsodium-wrappers + tweetnacl          | Curve25519 key exchange, XSalsa20-Poly1305 authenticated encryption   |
-| **P2P Networking**     | Gun.js                                  | Decentralized data sync, store-and-forward relay                      |
-| **Blockchain**         | Ethers.js 6.x                           | Ethereum wallet derivation, MetaMask provider, on-chain balance       |
+| **Encryption**         | libsodium-wrappers + tweetnacl          | Curve25519 key exchange, XSalsa20-Poly1305 authenticated encryption, X3DH-lite PreKeys |
+| **P2P Networking**     | Gun.js                                  | Decentralized data sync, daily time-bucketed inboxes, privacy hashing |
+| **Web3 / Blockchain**  | Wagmi + Viem + TanStack Query           | Robust SSR-safe Ethereum wallet connection, contract interaction      |
 | **Key Derivation**     | @scure/bip39 + ethers Wallet.fromPhrase | BIP39 mnemonic generation, deterministic identity and wallet recovery |
 | **Charts**             | Recharts                                | AreaChart, BarChart, PieChart for the analytics dashboard             |
 | **QR Codes**           | qrcode.react                            | QR code generation for Krypton ID and wallet address sharing          |
@@ -359,8 +360,9 @@ krypton-app/
 │   │   ├── encryption.ts            # E2EE encrypt/decrypt (libsodium)
 │   │   └── network.ts               # Gun.js P2P relay + peer event system
 │   │
-│   ├── store/                       # State management
-│   │   ├── useKryptonStore.ts       # Main Zustand store (identity, messages, contacts, wallet)
+│   ├── store/                       # State management (Zustand)
+│   │   ├── useKryptonStore.ts       # Main store combining slices
+│   │   ├── slices/                  # Modular state slices (Crypto, Network, Message, Wallet)
 │   │   └── dashboardStats.ts        # Analytics computation utilities
 │   │
 │   └── types/                       # TypeScript type definitions
@@ -507,7 +509,7 @@ Sender                    Gun.js Relay                  Receiver
   │                           │                            │  decrypt & display
 ```
 
-Each user has an "inbox" node in the Gun graph: `krypton_inbox_{kryptonId}`. When you send a message, it's written to the recipient's inbox node. The recipient's subscription fires and decrypts it locally.
+Each user has daily-bucketed "inbox" nodes in the Gun graph (e.g., `krypton_inbox_v2_<SHA256>_2026-09-01`). This time-bucketing prevents unbounded node growth, while the SHA-256 hash obscures the recipient's identity from network observers. When you send a message, it's written to the recipient's active bucket. The recipient's subscription fires and decrypts it locally.
 
 ### 4. Crypto Wallet Integration
 
@@ -587,7 +589,7 @@ Five comprehensive analytics sections, all computed from live store data:
 
 **Files:** `src/components/WalletDashboard.tsx`, `src/components/WalletProvider.tsx`
 
-- **BIP39 mnemonic-derived** ETH address (displayed by default)
+- **Powered by Wagmi & Viem** — robust hooks for connection state and sending transactions
 - **MetaMask integration** — connect to override wallet address and fetch real on-chain balance
 - **Send modal** — enter recipient address and amount
 - **Receive modal** — displays your address as a QR code
