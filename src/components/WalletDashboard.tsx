@@ -4,7 +4,6 @@ import { useState, useEffect } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useKryptonStore } from '@/store/useKryptonStore';
 import { useWeb3 } from '@/components/WalletProvider';
-import { ethers } from 'ethers';
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown error';
@@ -37,29 +36,33 @@ export default function WalletDashboard() {
 
   // Fetch real on-chain balance when MetaMask connects
   useEffect(() => {
-    if (!provider || !connectedAddress) return undefined;
+    if (!connectedAddress) return undefined;
 
     let cancelled = false;
-    void provider
-      .getBalance(connectedAddress)
-      .then((balance) => {
+    void (async () => {
+      try {
+        const { ethers: ethersLib } = await import('ethers');
+        const injected = typeof window !== 'undefined' ? (window as any).ethereum : undefined;
+        if (!injected) return;
+        const browserProvider = new ethersLib.BrowserProvider(injected as ConstructorParameters<typeof ethersLib.BrowserProvider>[0]);
+        const balance = await browserProvider.getBalance(connectedAddress);
         if (cancelled) return;
-        const ethBalance = Number.parseFloat(ethers.formatEther(balance));
+        const ethBalance = Number.parseFloat(ethersLib.formatEther(balance));
         updateWalletBalance('ETH', ethBalance);
         setRpcError(null);
-      })
-      .catch((error) => {
+      } catch (error: unknown) {
         if (cancelled) return;
         console.log('RPC Error fetching balance:', getErrorMessage(error));
         setRpcError(
           'Unable to fetch balance. Your MetaMask may be connected to an offline RPC. Switch to Mainnet or Sepolia and try again.'
         );
-      });
+      }
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [provider, connectedAddress, updateWalletBalance]);
+  }, [connectedAddress, updateWalletBalance]);
 
   if (!walletState || !keys) {
     return <div className="p-6 text-white text-center mt-20">Loading wallet state...</div>;
@@ -115,8 +118,8 @@ export default function WalletDashboard() {
     if (!sendAmount || !sendAddress) return;
 
     const parsedAmount = Number(sendAmount);
-    if (!ethers.isAddress(sendAddress)) {
-      alert('Enter a valid Ethereum address.');
+    if (!sendAddress.trim() || !/^0x[a-fA-F0-9]{40}$/.test(sendAddress)) {
+      alert('Please enter a valid Ethereum address');
       return;
     }
     if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
@@ -132,10 +135,15 @@ export default function WalletDashboard() {
         const result = await sendTransaction(sendAddress, sendAmount);
         setTxResult(result);
         // Refresh balance
-        if (provider) {
-          const balance = await provider.getBalance(connectedAddress);
-          updateWalletBalance('ETH', Number.parseFloat(ethers.formatEther(balance)));
-        }
+        try {
+          const { ethers: ethersLib } = await import('ethers');
+          const injected = typeof window !== 'undefined' ? (window as any).ethereum : undefined;
+          if (injected && connectedAddress) {
+            const browserProvider = new ethersLib.BrowserProvider(injected as ConstructorParameters<typeof ethersLib.BrowserProvider>[0]);
+            const balance = await browserProvider.getBalance(connectedAddress);
+            updateWalletBalance('ETH', Number.parseFloat(ethersLib.formatEther(balance)));
+          }
+        } catch { /* balance refresh is best-effort */ }
       } catch (error) {
         alert(`Transaction failed: ${getErrorMessage(error)}`);
       } finally {

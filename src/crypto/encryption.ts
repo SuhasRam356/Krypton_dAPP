@@ -83,6 +83,40 @@ export async function initContactRatchet(
   return initRatchetPair(sharedSecret, myKryptonId, theirKryptonId);
 }
 
+import { type PublishedPreKeyBundle, verifyPreKeyBundle, computePreKeySharedSecret } from './prekeys';
+
+/**
+ * Initialize a send/recv ratchet pair using an offline PreKey bundle (X3DH-lite).
+ */
+export async function initContactRatchetWithPreKey(
+  myPrivateKey: Uint8Array,
+  bundle: PublishedPreKeyBundle,
+  myKryptonId: string,
+  theirKryptonId: string
+): Promise<{ send: RatchetState; recv: RatchetState }> {
+  const { fromHex } = await import('./keys');
+  
+  const isValid = await verifyPreKeyBundle(bundle);
+  if (!isValid) {
+    throw new Error('PreKey bundle signature verification failed');
+  }
+
+  const theirIdentityKey = fromHex(bundle.identityKey);
+  const theirSignedPreKey = fromHex(bundle.signedPreKey);
+  const theirOneTimePreKey = bundle.oneTimePreKeys.length > 0 && bundle.oneTimePreKeys[0]
+    ? fromHex(bundle.oneTimePreKeys[0] as string)
+    : undefined;
+
+  const sharedSecret = await computePreKeySharedSecret(
+    myPrivateKey,
+    theirIdentityKey,
+    theirSignedPreKey,
+    theirOneTimePreKey
+  );
+
+  return initRatchetPair(sharedSecret, myKryptonId, theirKryptonId);
+}
+
 /**
  * Encrypt with the symmetric ratchet. Returns ciphertext, updated state, and index.
  */

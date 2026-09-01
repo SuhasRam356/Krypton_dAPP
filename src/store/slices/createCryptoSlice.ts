@@ -26,6 +26,9 @@ export interface CryptoSlice {
   /** Per-contact send/recv ratchet pairs, keyed by contact Krypton ID. */
   ratchetStates: Record<string, { send: RatchetState; recv: RatchetState }>;
   initRatchetForContact: (contactId: string) => Promise<void>;
+
+  /** Publish a PreKey bundle to the Gun network for offline session establishment */
+  publishPreKeys: () => Promise<void>;
 }
 
 // ── Helpers shared with the old monolith ──
@@ -50,6 +53,7 @@ export const createCryptoSlice: StateCreator<KryptonStore, [], [], CryptoSlice> 
       ratchetStates: {},
     });
     get().startNetworkSync();
+    void get().publishPreKeys();
   },
 
   loadKeysFromMnemonic: (mnemonic: string) => {
@@ -65,6 +69,7 @@ export const createCryptoSlice: StateCreator<KryptonStore, [], [], CryptoSlice> 
       ratchetStates: {},
     });
     get().startNetworkSync();
+    void get().publishPreKeys();
   },
 
   ratchetStates: {},
@@ -77,18 +82,56 @@ export const createCryptoSlice: StateCreator<KryptonStore, [], [], CryptoSlice> 
     if (!keys || ratchetStates[contactId] || !isValidKryptonId(contactId)) return;
 
     try {
-      const theirPublicKey = fromHex(contactId);
-      const pair = await initContactRatchet(
-        keys.messagingPrivateKey,
-        theirPublicKey,
-        keys.kryptonId,
-        contactId
-      );
+      const { fetchPreKeysFromGun } = await import('@/crypto/prekeys');
+      const { getGun } = await import('@/crypto/network');
+      
+      const preKeyBundle = await fetchPreKeysFromGun(contactId, getGun() as any);
+      let pair;
+
+      if (preKeyBundle) {
+        const { initContactRatchetWithPreKey } = await import('@/crypto/encryption');
+        pair = await initContactRatchetWithPreKey(
+          keys.messagingPrivateKey,
+          preKeyBundle,
+          keys.kryptonId,
+          contactId
+        );
+        console.log(`Established session with ${contactId} via PreKey bundle`);
+      } else {
+        // Fallback to basic ECDH if no PreKey bundle is found
+        const theirPublicKey = fromHex(contactId);
+        pair = await initContactRatchet(
+          keys.messagingPrivateKey,
+          theirPublicKey,
+          keys.kryptonId,
+          contactId
+        );
+        console.log(`Established basic session with ${contactId} (no PreKey bundle)`);
+      }
+
       set((state) => ({
         ratchetStates: { ...state.ratchetStates, [contactId]: pair },
       }));
     } catch (error) {
       console.error('Failed to init ratchet:', error);
+    }
+  },
+
+  publishPreKeys: async () => {
+    const { keys } = get();
+    if (!keys) return;
+
+    try {
+      const { generatePreKeyBundle, toPublishedBundle, publishPreKeysToGun } = await import('@/crypto/prekeys');
+      const { getGun } = await import('@/crypto/network');
+      
+      const bundle = await generatePreKeyBundle(keys.messagingPublicKey, keys.messagingPrivateKey);
+      const publishedBundle = toPublishedBundle(bundle);
+      
+      publishPreKeysToGun(keys.kryptonId, publishedBundle, getGun() as any);
+      console.log('PreKeys published to Gun network');
+    } catch (error) {
+      console.error('Failed to publish PreKeys:', error);
     }
   },
 });
