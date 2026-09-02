@@ -244,31 +244,37 @@ export const createNetworkSlice: StateCreator<KryptonStore, [], [], NetworkSlice
       let transferAmount = incomingMessage.transferAmount;
       let transferSymbol = incomingMessage.transferSymbol;
       let selfDestructTTL = incomingMessage.selfDestructTTL;
+      let attachment: { data: string; filename: string; mimeType: string; size: number } | undefined;
 
       try {
         let plaintext: string;
         if (typeof incomingMessage.ratchetIndex === 'number') {
-          let pair = get().ratchetStates[incomingMessage.sender];
-          if (!pair) {
-            // Use the same PreKey-aware init path as the sender
-            await get().initRatchetForContact(incomingMessage.sender);
-            pair = get().ratchetStates[incomingMessage.sender];
+          let ratchetState = get().ratchetStates[incomingMessage.sender];
+          
+          if (!ratchetState && incomingMessage.initializationPayload) {
+            // It's the first message from this sender, init using their payload
+            const theirIdentityKey = incomingMessage.sender.slice(2); // remove '05' prefix
+            ratchetState = await get().initRatchetFromPayload(
+              incomingMessage.sender, 
+              theirIdentityKey, 
+              incomingMessage.initializationPayload
+            ) ?? undefined;
           }
 
-          if (!pair) {
+          if (!ratchetState) {
             throw new Error('Could not establish ratchet session with sender');
           }
 
           const result = await decryptWithRatchetDemo(
             incomingMessage.encryptedPayload,
-            pair.recv,
+            ratchetState,
             incomingMessage.ratchetIndex
           );
           plaintext = result.plaintext;
           set((state) => ({
             ratchetStates: {
               ...state.ratchetStates,
-              [incomingMessage.sender]: { ...pair, recv: result.newState },
+              [incomingMessage.sender]: result.newState,
             },
           }));
         } else {
@@ -296,12 +302,18 @@ export const createNetworkSlice: StateCreator<KryptonStore, [], [], NetworkSlice
           transferAmount = envelope.transferAmount;
           transferSymbol = envelope.transferSymbol;
           selfDestructTTL = envelope.selfDestructTTL;
+          attachment = envelope.attachment;
         } else {
           // Legacy message support: older Krypton builds encrypted raw text only.
           decryptedPayload = plaintext;
         }
       } catch (error) {
-        console.error('Decryption error:', error);
+        console.warn(
+          'Skipped undecryptable message from',
+          incomingMessage.sender,
+          ':',
+          error instanceof Error ? error.message : error
+        );
       }
 
       if (!senderContact) {
@@ -332,6 +344,7 @@ export const createNetworkSlice: StateCreator<KryptonStore, [], [], NetworkSlice
         ...(typeof transferAmount === 'number' ? { transferAmount } : {}),
         ...(typeof transferSymbol === 'string' ? { transferSymbol } : {}),
         ...(typeof selfDestructTTL === 'number' ? { selfDestructTTL } : {}),
+        ...(attachment ? { attachment } : {}),
       };
 
       addMessage(message);
@@ -342,13 +355,15 @@ export const createNetworkSlice: StateCreator<KryptonStore, [], [], NetworkSlice
       (incomingMessage) => {
         if (isEncryptedControlMessage(incomingMessage)) {
           void handleEncryptedControlMessage(incomingMessage).catch((error) => {
-            console.error('Encrypted control message failed:', error);
+            console.warn('Encrypted control message failed:', error instanceof Error ? error.message : error);
           });
           return;
         }
 
         if (isIncomingOnionMessage(incomingMessage)) {
-          void handleIncomingOnionMessage(incomingMessage);
+          void handleIncomingOnionMessage(incomingMessage).catch((error) => {
+            console.warn('Incoming onion message failed:', error instanceof Error ? error.message : error);
+          });
         }
       },
       handleLegacyControlMessage

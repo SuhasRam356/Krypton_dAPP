@@ -1,14 +1,14 @@
 import sodium from 'libsodium-wrappers';
 import nacl from 'tweetnacl';
 import {
-  type RatchetState,
+  type DoubleRatchetState,
   computeSharedSecret,
-  initRatchetPair,
+  initDoubleRatchet,
   encryptWithRatchet,
   decryptWithRatchet,
 } from './ratchet';
 
-export type { RatchetState };
+export type { DoubleRatchetState };
 
 /**
  * Encrypts a payload for a specific recipient using authenticated public-key encryption.
@@ -78,23 +78,21 @@ export async function initContactRatchet(
   theirPublicKey: Uint8Array,
   myKryptonId: string,
   theirKryptonId: string
-): Promise<{ send: RatchetState; recv: RatchetState }> {
+): Promise<DoubleRatchetState> {
   const sharedSecret = await computeSharedSecret(myPrivateKey, theirPublicKey);
-  return initRatchetPair(sharedSecret, myKryptonId, theirKryptonId);
+  // Using true for isAlice because we are initiating
+  return initDoubleRatchet(sharedSecret, theirKryptonId, theirPublicKey, true);
 }
 
 import { type PublishedPreKeyBundle, verifyPreKeyBundle, computePreKeySharedSecret } from './prekeys';
 
-/**
- * Initialize a send/recv ratchet pair using an offline PreKey bundle (X3DH-lite).
- */
 export async function initContactRatchetWithPreKey(
   myPrivateKey: Uint8Array,
   bundle: PublishedPreKeyBundle,
   myKryptonId: string,
   theirKryptonId: string
-): Promise<{ send: RatchetState; recv: RatchetState }> {
-  const { fromHex } = await import('./keys');
+): Promise<DoubleRatchetState> {
+  const { fromHex, toHex } = await import('./keys');
   
   const isValid = await verifyPreKeyBundle(bundle);
   if (!isValid) {
@@ -106,15 +104,22 @@ export async function initContactRatchetWithPreKey(
   const theirOneTimePreKey = bundle.oneTimePreKeys.length > 0 && bundle.oneTimePreKeys[0]
     ? fromHex(bundle.oneTimePreKeys[0] as string)
     : undefined;
+  const theirKyberPublicKey = bundle.kyberPublicKey ? fromHex(bundle.kyberPublicKey) : undefined;
 
-  const sharedSecret = await computePreKeySharedSecret(
+  const { sharedSecret, ephemeralPublicKey, kyberCiphertext } = await computePreKeySharedSecret(
     myPrivateKey,
     theirIdentityKey,
     theirSignedPreKey,
-    theirOneTimePreKey
+    theirOneTimePreKey,
+    theirKyberPublicKey
   );
 
-  return initRatchetPair(sharedSecret, myKryptonId, theirKryptonId);
+  const state = await initDoubleRatchet(sharedSecret, theirKryptonId, theirIdentityKey, true);
+  state.initializationPayload = {
+    ephemeralPublicKey: toHex(ephemeralPublicKey),
+    ...(kyberCiphertext ? { kyberCiphertext: toHex(kyberCiphertext) } : {}),
+  };
+  return state;
 }
 
 /**
@@ -122,8 +127,8 @@ export async function initContactRatchetWithPreKey(
  */
 export async function encryptWithRatchetDemo(
   payload: string,
-  ratchetState: RatchetState
-): Promise<{ ciphertext: string; newState: RatchetState; ratchetIndex: number }> {
+  ratchetState: DoubleRatchetState
+): Promise<{ ciphertext: string; newState: DoubleRatchetState; ratchetIndex: number }> {
   const { ciphertext, newState, messageIndex } = await encryptWithRatchet(payload, ratchetState);
   return { ciphertext, newState, ratchetIndex: messageIndex };
 }
@@ -133,8 +138,8 @@ export async function encryptWithRatchetDemo(
  */
 export async function decryptWithRatchetDemo(
   ciphertextBase64: string,
-  ratchetState: RatchetState,
+  ratchetState: DoubleRatchetState,
   ratchetIndex: number
-): Promise<{ plaintext: string; newState: RatchetState }> {
+): Promise<{ plaintext: string; newState: DoubleRatchetState }> {
   return decryptWithRatchet(ciphertextBase64, ratchetState, ratchetIndex);
 }

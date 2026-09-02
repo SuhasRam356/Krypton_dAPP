@@ -16,7 +16,7 @@ import type {
 } from '@/types';
 import { isValidKryptonId, normalizeKryptonId, fromHex } from '@/crypto/keys';
 import { encryptForContact } from '@/crypto/encryption';
-import { sendToNetwork } from '@/crypto/network';
+import { sendToNetwork, deleteFromNetwork } from '@/crypto/network';
 import type { KryptonStore } from '../useKryptonStore';
 import { AI_CONTACT_ID, mergeAiContact, getAiContact } from './createCryptoSlice';
 
@@ -195,8 +195,14 @@ export const createMessageSlice: StateCreator<KryptonStore, [], [], MessageSlice
       ),
     }));
 
+    // Tell the recipient to unsend it locally
     void sendEncryptedUnsendSignal(message, keys).catch((error) => {
       console.error('Failed to send encrypted unsend signal:', error);
+    });
+
+    // Delete the original message from the P2P graph permanently
+    void deleteFromNetwork(message.recipient, message.id, message.timestamp).catch((error) => {
+      console.error('Failed to delete message from P2P graph:', error);
     });
   },
 

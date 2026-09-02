@@ -9,6 +9,7 @@ type GunMapChain = {
 };
 type GunChain = {
   get: (key: string) => GunChain;
+  put: (data: string | Record<string, unknown>, callback?: (ack: unknown) => void) => GunChain;
   set: (data: Record<string, string>) => void;
   map: () => GunMapChain;
 };
@@ -298,14 +299,43 @@ export const sendToNetwork = (
   const gun = getGun();
   const payloadStr = JSON.stringify(encryptedPayload);
 
+  // Cast to any to extract the id safely, since NetworkPayload union contains types without 'id'
+  const messageId = (encryptedPayload as any).id;
+  
+  if (!messageId) {
+    console.warn('sendToNetwork: payload missing id', encryptedPayload);
+    return relayConnected;
+  }
+
   // Write to legacy inbox (backwards compat)
-  gun.get(legacyInboxNodeKey(recipientKryptonId)).set({ payloadStr });
+  gun.get(legacyInboxNodeKey(recipientKryptonId)).get(messageId).put({ payloadStr });
 
   // Write to today's time-bucketed inbox (async because of SHA-256)
   void (async () => {
     const nodeKey = await inboxNodeKey(recipientKryptonId, todayBucket());
-    gun.get(nodeKey).set({ payloadStr });
+    gun.get(nodeKey).get(messageId).put({ payloadStr });
   })();
 
   return relayConnected;
+};
+
+/**
+ * Delete a message from the recipient's Gun.js inbox nodes by replacing its payload with null.
+ * Because we use time-bucketed nodes, we must target both the legacy node and the
+ * specific time-bucket node the message was originally stored in.
+ */
+export const deleteFromNetwork = async (
+  recipientKryptonId: string,
+  messageId: string,
+  timestamp: number
+): Promise<void> => {
+  const gun = getGun();
+
+  // Delete from legacy inbox
+  (gun.get(legacyInboxNodeKey(recipientKryptonId)).get(messageId) as any).put(null);
+
+  // Delete from time-bucketed inbox (must calculate the correct bucket based on timestamp)
+  const dateBucket = new Date(timestamp).toISOString().slice(0, 10);
+  const nodeKey = await inboxNodeKey(recipientKryptonId, dateBucket);
+  (gun.get(nodeKey).get(messageId) as any).put(null);
 };

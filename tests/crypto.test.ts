@@ -56,25 +56,25 @@ describe('authenticated encryption', () => {
     const alice = generateKryptonIdentity();
     const bob = generateKryptonIdentity();
 
-    const alicePair = await initContactRatchet(
+    let aliceState = await initContactRatchet(
       alice.messagingPrivateKey,
       bob.messagingPublicKey,
       alice.kryptonId,
       bob.kryptonId
     );
-    const bobPair = await initContactRatchet(
+    let bobState = await initContactRatchet(
       bob.messagingPrivateKey,
       alice.messagingPublicKey,
       bob.kryptonId,
       alice.kryptonId
     );
 
-    const first = await encryptWithRatchetDemo('first', alicePair.send);
+    const first = await encryptWithRatchetDemo('first', aliceState);
     const second = await encryptWithRatchetDemo('second', first.newState);
 
     const decryptedSecond = await decryptWithRatchetDemo(
       second.ciphertext,
-      bobPair.recv,
+      bobState,
       second.ratchetIndex
     );
     expect(decryptedSecond.plaintext).toBe('second');

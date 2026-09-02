@@ -9,18 +9,12 @@
  */
 
 import sodium from 'libsodium-wrappers';
+import * as kyber from 'crystals-kyber';
 
 const MESSAGE_KEY_CONTEXT = 'krypton-ratchet-v1-message-key';
 const CHAIN_ADVANCE_CONTEXT = 'krypton-ratchet-v1-chain-advance';
+const ROOT_ADVANCE_CONTEXT = 'krypton-ratchet-v1-root-advance';
 const MAX_SKIPPED_MESSAGE_KEYS = 50;
-
-// ── Ratchet State ──
-export interface RatchetState {
-  chainKey: Uint8Array; // Current chain key (32 bytes) — advances after each message
-  messageIndex: number; // Next message index expected on this chain
-  contactId: string; // Which contact this ratchet belongs to
-  skippedMessageKeys?: Record<number, Uint8Array>; // For bounded out-of-order delivery support
-}
 
 /**
  * Derive the initial shared secret from our private key and their public key
@@ -34,71 +28,145 @@ export async function computeSharedSecret(
   return sodium.crypto_scalarmult(myPrivateKey, theirPublicKey);
 }
 
-/**
- * Initialize a send/recv ratchet PAIR from a shared secret.
- *
- * Two distinct chains avoid duplex-chat collisions. Both sides deterministically
- * agree which chain is used for each direction by comparing Krypton IDs.
- */
-export async function initRatchetPair(
-  sharedSecret: Uint8Array,
-  myKryptonId: string,
-  theirKryptonId: string
-): Promise<{ send: RatchetState; recv: RatchetState }> {
-  await sodium.ready;
+// ── Ratchet State ──
+export interface DoubleRatchetState {
+  // DH Ratchet
+  DHs: { publicKey: Uint8Array; privateKey: Uint8Array }; // Our DH Keypair
+  DHr: Uint8Array | null; // Their DH Public Key
 
-  const saltA = sodium.from_string('krypton-ratchet-v1-chainA');
-  const saltB = sodium.from_string('krypton-ratchet-v1-chainB');
-  const chainA = sodium.crypto_generichash(32, sharedSecret, saltA);
-  const chainB = sodium.crypto_generichash(32, sharedSecret, saltB);
+  // Symmetric Ratchet
+  rootKey: Uint8Array; // 32-byte RK
+  chainKeySend: Uint8Array | null; // 32-byte CKs
+  chainKeyRecv: Uint8Array | null; // 32-byte CKr
+  
+  // Message indices
+  messageIndexSend: number; // Ns
+  messageIndexRecv: number; // Nr
+  previousChainLength: number; // PN (messages sent in previous chain)
+  
+  contactId: string;
+  skippedMessageKeys: Record<number, Uint8Array>;
 
-  const iOwnChainA = myKryptonId < theirKryptonId;
-
-  return {
-    send: {
-      chainKey: iOwnChainA ? chainA : chainB,
-      messageIndex: 0,
-      contactId: theirKryptonId,
-      skippedMessageKeys: {},
-    },
-    recv: {
-      chainKey: iOwnChainA ? chainB : chainA,
-      messageIndex: 0,
-      contactId: theirKryptonId,
-      skippedMessageKeys: {},
-    },
+  // X3DH + PQXDH payload for the first message (only for the initiator)
+  initializationPayload?: {
+    ephemeralPublicKey: string; // hex
+    kyberCiphertext?: string; // hex
   };
 }
 
-/** @deprecated Unsafe for duplex chat — see initRatchetPair. */
-export async function initRatchet(
+/**
+ * Initialize a Double Ratchet from a shared secret.
+ * Used when establishing a session without PQXDH, or with PQXDH's resulting secret.
+ */
+export async function initDoubleRatchet(
   sharedSecret: Uint8Array,
-  contactId: string
-): Promise<RatchetState> {
+  contactId: string,
+  theirDHPublicKey: Uint8Array | null,
+  isAlice: boolean // True if we are the initiator (we send the first message)
+): Promise<DoubleRatchetState> {
   await sodium.ready;
-  const salt = sodium.from_string('krypton-ratchet-v1');
-  const chainKey = sodium.crypto_generichash(32, sharedSecret, salt);
-  return { chainKey, messageIndex: 0, contactId, skippedMessageKeys: {} };
+
+  const DHs = sodium.crypto_box_keypair();
+  
+  let rootKey = sharedSecret;
+  let chainKeySend: Uint8Array | null = null;
+  let chainKeyRecv: Uint8Array | null = null;
+
+  if (isAlice) {
+    // Alice sends first. She doesn't have a chain key to send yet, 
+    // it will be generated on her first ratchetAdvanceDH.
+    // Wait, in Double Ratchet, Alice starts with a DH step to Bob's public key (if known).
+    if (theirDHPublicKey) {
+      const dhOutput = sodium.crypto_scalarmult(DHs.privateKey, theirDHPublicKey);
+      const kdfInput = new Uint8Array(rootKey.length + dhOutput.length);
+      kdfInput.set(rootKey);
+      kdfInput.set(dhOutput, rootKey.length);
+      
+      const kdfOut = sodium.crypto_generichash(64, kdfInput, sodium.from_string(ROOT_ADVANCE_CONTEXT));
+      rootKey = kdfOut.slice(0, 32);
+      chainKeySend = kdfOut.slice(32, 64);
+    }
+  } else {
+    // Bob is receiving first.
+    // His chainKeyRecv will be established when he receives Alice's DHs.
+  }
+
+  return {
+    DHs,
+    DHr: theirDHPublicKey,
+    rootKey,
+    chainKeySend,
+    chainKeyRecv,
+    messageIndexSend: 0,
+    messageIndexRecv: 0,
+    previousChainLength: 0,
+    contactId,
+    skippedMessageKeys: {},
+  };
 }
 
 /**
- * Advance the ratchet by one step. The returned message key encrypts/decrypts
- * the current index, and the returned state has already forgotten the old chain
- * key.
+ * Step the DH Ratchet using a newly received DH public key.
  */
-export async function ratchetAdvance(
-  state: RatchetState
-): Promise<{ messageKey: Uint8Array; newState: RatchetState }> {
+export async function ratchetAdvanceDH(
+  state: DoubleRatchetState,
+  newDHr: Uint8Array
+): Promise<DoubleRatchetState> {
   await sodium.ready;
+  
+  // 1. Calculate DH(DHs, newDHr) to advance CKr
+  let dhOutput = sodium.crypto_scalarmult(state.DHs.privateKey, newDHr);
+  let kdfInput = new Uint8Array(state.rootKey.length + dhOutput.length);
+  kdfInput.set(state.rootKey);
+  kdfInput.set(dhOutput, state.rootKey.length);
+  
+  let kdfOut = sodium.crypto_generichash(64, kdfInput, sodium.from_string(ROOT_ADVANCE_CONTEXT));
+  let rootKey = kdfOut.slice(0, 32);
+  const chainKeyRecv = kdfOut.slice(32, 64);
+
+  // 2. Generate a new DHs keypair
+  const DHs = sodium.crypto_box_keypair();
+  
+  // 3. Calculate DH(new_DHs, newDHr) to advance CKs
+  dhOutput = sodium.crypto_scalarmult(DHs.privateKey, newDHr);
+  kdfInput = new Uint8Array(rootKey.length + dhOutput.length);
+  kdfInput.set(rootKey);
+  kdfInput.set(dhOutput, rootKey.length);
+  
+  kdfOut = sodium.crypto_generichash(64, kdfInput, sodium.from_string(ROOT_ADVANCE_CONTEXT));
+  rootKey = kdfOut.slice(0, 32);
+  const chainKeySend = kdfOut.slice(32, 64);
+
+  return {
+    ...state,
+    DHs,
+    DHr: newDHr,
+    rootKey,
+    chainKeySend,
+    chainKeyRecv,
+    previousChainLength: state.messageIndexSend,
+    messageIndexSend: 0,
+    messageIndexRecv: 0,
+  };
+}
+
+/**
+ * Step the symmetric ratchet for SENDING.
+ */
+export async function ratchetAdvanceSend(
+  state: DoubleRatchetState
+): Promise<{ messageKey: Uint8Array; newState: DoubleRatchetState }> {
+  await sodium.ready;
+  if (!state.chainKeySend) throw new Error("chainKeySend is null");
 
   const messageKey = sodium.crypto_generichash(
     32,
-    state.chainKey,
+    state.chainKeySend,
     sodium.from_string(MESSAGE_KEY_CONTEXT)
   );
   const nextChainKey = sodium.crypto_generichash(
     32,
-    state.chainKey,
+    state.chainKeySend,
     sodium.from_string(CHAIN_ADVANCE_CONTEXT)
   );
 
@@ -106,9 +174,38 @@ export async function ratchetAdvance(
     messageKey,
     newState: {
       ...state,
-      chainKey: nextChainKey,
-      messageIndex: state.messageIndex + 1,
-      skippedMessageKeys: state.skippedMessageKeys ?? {},
+      chainKeySend: nextChainKey,
+      messageIndexSend: state.messageIndexSend + 1,
+    },
+  };
+}
+
+/**
+ * Step the symmetric ratchet for RECEIVING.
+ */
+export async function ratchetAdvanceRecv(
+  state: DoubleRatchetState
+): Promise<{ messageKey: Uint8Array; newState: DoubleRatchetState }> {
+  await sodium.ready;
+  if (!state.chainKeyRecv) throw new Error("chainKeyRecv is null");
+
+  const messageKey = sodium.crypto_generichash(
+    32,
+    state.chainKeyRecv,
+    sodium.from_string(MESSAGE_KEY_CONTEXT)
+  );
+  const nextChainKey = sodium.crypto_generichash(
+    32,
+    state.chainKeyRecv,
+    sodium.from_string(CHAIN_ADVANCE_CONTEXT)
+  );
+
+  return {
+    messageKey,
+    newState: {
+      ...state,
+      chainKeyRecv: nextChainKey,
+      messageIndexRecv: state.messageIndexRecv + 1,
     },
   };
 }
@@ -119,15 +216,12 @@ export async function ratchetAdvance(
  */
 export async function ratchetEncrypt(plaintext: string, messageKey: Uint8Array): Promise<string> {
   await sodium.ready;
-
   const messageBytes = sodium.from_string(plaintext);
   const nonce = sodium.randombytes_buf(sodium.crypto_secretbox_NONCEBYTES);
   const ciphertext = sodium.crypto_secretbox_easy(messageBytes, nonce, messageKey);
-
   const combined = new Uint8Array(nonce.length + ciphertext.length);
   combined.set(nonce);
   combined.set(ciphertext, nonce.length);
-
   return sodium.to_base64(combined);
 }
 
@@ -139,29 +233,26 @@ export async function ratchetDecrypt(
   messageKey: Uint8Array
 ): Promise<string> {
   await sodium.ready;
-
   const combined = sodium.from_base64(ciphertextBase64);
   if (combined.length <= sodium.crypto_secretbox_NONCEBYTES) {
-    throw new Error('Invalid ratchet ciphertext');
+    throw new Error('Invalid encrypted payload (too short for nonce)');
   }
-
   const nonce = combined.slice(0, sodium.crypto_secretbox_NONCEBYTES);
   const ciphertext = combined.slice(sodium.crypto_secretbox_NONCEBYTES);
-
   const decryptedBytes = sodium.crypto_secretbox_open_easy(ciphertext, nonce, messageKey);
   return sodium.to_string(decryptedBytes);
 }
 
 /**
- * Convenience: advance ratchet + encrypt in one call.
+ * Encrypt a message using the Double Ratchet state.
  */
 export async function encryptWithRatchet(
-  plaintext: string,
-  state: RatchetState
-): Promise<{ ciphertext: string; newState: RatchetState; messageIndex: number }> {
-  const { messageKey, newState } = await ratchetAdvance(state);
-  const ciphertext = await ratchetEncrypt(plaintext, messageKey);
-  return { ciphertext, newState, messageIndex: state.messageIndex };
+  payload: string,
+  state: DoubleRatchetState
+): Promise<{ ciphertext: string; newState: DoubleRatchetState; messageIndex: number }> {
+  const { messageKey, newState } = await ratchetAdvanceSend(state);
+  const ciphertext = await ratchetEncrypt(payload, messageKey);
+  return { ciphertext, newState, messageIndex: state.messageIndexSend };
 }
 
 function pruneSkippedKeys(skipped: Record<number, Uint8Array>): Record<number, Uint8Array> {
@@ -177,69 +268,42 @@ function pruneSkippedKeys(skipped: Record<number, Uint8Array>): Record<number, U
 }
 
 /**
- * Convenience: advance ratchet to a specific index + decrypt.
- * Supports a bounded number of skipped message keys for out-of-order delivery.
+ * Decrypt a message using the Double Ratchet state.
  */
 export async function decryptWithRatchet(
   ciphertextBase64: string,
-  state: RatchetState,
+  state: DoubleRatchetState,
   targetIndex: number
-): Promise<{ plaintext: string; newState: RatchetState }> {
-  if (!Number.isInteger(targetIndex) || targetIndex < 0) {
-    throw new Error('Invalid ratchet index');
-  }
+): Promise<{ plaintext: string; newState: DoubleRatchetState }> {
+  // Support out of order delivery (skip keys)
+  let currentState = state;
 
-  let currentState: RatchetState = {
-    ...state,
-    skippedMessageKeys: state.skippedMessageKeys ?? {},
-  };
-
-  if (targetIndex < currentState.messageIndex) {
-    const skippedKey = currentState.skippedMessageKeys?.[targetIndex];
+  if (targetIndex < currentState.messageIndexRecv) {
+    // Check skipped keys
+    const skippedKey = currentState.skippedMessageKeys[targetIndex];
     if (!skippedKey) {
-      throw new Error(
-        'Message key is no longer available; possible replay or excessive reordering'
-      );
+      throw new Error('Message key is no longer available; possible replay or excessive reordering');
     }
-
     const plaintext = await ratchetDecrypt(ciphertextBase64, skippedKey);
-    const { [targetIndex]: _usedKey, ...remainingSkippedKeys } =
-      currentState.skippedMessageKeys ?? {};
-    void _usedKey;
-
-    return {
-      plaintext,
-      newState: {
-        ...currentState,
-        skippedMessageKeys: remainingSkippedKeys,
-      },
-    };
+    const newSkipped = { ...currentState.skippedMessageKeys };
+    delete newSkipped[targetIndex];
+    return { plaintext, newState: { ...currentState, skippedMessageKeys: newSkipped } };
   }
 
-  if (targetIndex - currentState.messageIndex > MAX_SKIPPED_MESSAGE_KEYS) {
-    throw new Error('Too many skipped messages to safely fast-forward ratchet');
+  // Fast-forward ratchet if there are skipped messages
+  let newSkippedKeys = { ...currentState.skippedMessageKeys };
+  while (currentState.messageIndexRecv < targetIndex) {
+    const { messageKey, newState } = await ratchetAdvanceRecv(currentState);
+    newSkippedKeys[currentState.messageIndexRecv] = messageKey;
+    currentState = newState;
   }
+  
+  newSkippedKeys = pruneSkippedKeys(newSkippedKeys);
 
-  let skippedMessageKeys = { ...(currentState.skippedMessageKeys ?? {}) };
-
-  while (currentState.messageIndex < targetIndex) {
-    const skippedIndex = currentState.messageIndex;
-    const { messageKey, newState } = await ratchetAdvance(currentState);
-    skippedMessageKeys[skippedIndex] = messageKey;
-    currentState = { ...newState, skippedMessageKeys };
-  }
-
-  skippedMessageKeys = pruneSkippedKeys(skippedMessageKeys);
-  currentState = { ...currentState, skippedMessageKeys };
-
-  const { messageKey, newState } = await ratchetAdvance(currentState);
+  // Now we are at targetIndex
+  const { messageKey, newState } = await ratchetAdvanceRecv(currentState);
+  const finalState = { ...newState, skippedMessageKeys: newSkippedKeys };
   const plaintext = await ratchetDecrypt(ciphertextBase64, messageKey);
-
-  return {
-    plaintext,
-    newState: {
-      ...newState,
-      skippedMessageKeys,
-    },
-  };
+  
+  return { plaintext, newState: finalState };
 }

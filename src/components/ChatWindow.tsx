@@ -70,6 +70,15 @@ export default function ChatWindow() {
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [transferAmount, setTransferAmount] = useState('');
 
+  // Attachment state
+  const [attachment, setAttachment] = useState<{
+    data: string;
+    filename: string;
+    mimeType: string;
+    size: number;
+  } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -135,8 +144,33 @@ export default function ChatWindow() {
     return contact.name.toLowerCase().includes(query) || contact.id.toLowerCase().includes(query);
   });
 
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 1024 * 1024) {
+      alert('File size exceeds 1MB limit for P2P transfer.');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const data = event.target?.result as string;
+      setAttachment({
+        data,
+        filename: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        size: file.size,
+      });
+    };
+    reader.readAsDataURL(file);
+    
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
   const handleSend = async (isCryptoTransfer = false, amount = 0, symbol = 'KRYP') => {
-    if ((!input.trim() && !isCryptoTransfer) || !keys || !activeContact) return;
+    if ((!input.trim() && !isCryptoTransfer && !attachment) || !keys || !activeContact) return;
 
     if (!activeContact.isAi && !isValidKryptonId(activeContact.id)) {
       alert('Invalid Krypton ID for this contact.');
@@ -152,6 +186,8 @@ export default function ChatWindow() {
     const timestamp = nowMs();
     const id = createMessageId();
     setInput('');
+    const currentAttachment = attachment;
+    setAttachment(null);
     if (showTransferModal) setShowTransferModal(false);
 
     // Encrypt the payload using the contact's Krypton ID, which IS their public key.
@@ -161,9 +197,13 @@ export default function ChatWindow() {
 
     let ciphertext = '';
     let ratchetIndex: number | undefined;
+    let initPayload: { ephemeralPublicKey: string; kyberCiphertext?: string } | undefined;
 
     if (activeContact.isAi) {
-      ciphertext = await encryptForContact(userText, keys.messagingPrivateKey, targetPubKey);
+      // The AI just gets the text and doesn't handle attachments right now, 
+      // but we will still append the attachment string for now if it exists.
+      const aiText = currentAttachment ? `${userText}\n[Attached: ${currentAttachment.filename}]` : userText;
+      ciphertext = await encryptForContact(aiText, keys.messagingPrivateKey, targetPubKey);
     } else {
       const envelope: MessageEnvelope = {
         version: 1,
@@ -176,30 +216,39 @@ export default function ChatWindow() {
           ? { isCryptoTransfer, transferAmount: amount, transferSymbol: symbol }
           : {}),
         ...(selfDestructTTL ? { selfDestructTTL } : {}),
+        ...(currentAttachment ? { attachment: currentAttachment } : {}),
       };
 
-      let pair = ratchetStates[activeContact.id];
-      if (!pair) {
+      let ratchetState = ratchetStates[activeContact.id];
+      if (!ratchetState) {
         await initRatchetForContact(activeContact.id);
-        pair = useKryptonStore.getState().ratchetStates[activeContact.id];
+        ratchetState = useKryptonStore.getState().ratchetStates[activeContact.id];
       }
-      if (!pair) {
+      if (!ratchetState) {
         alert('Failed to initialize secure connection.');
         return;
       }
+      
+      if (ratchetState.initializationPayload) {
+        initPayload = ratchetState.initializationPayload;
+        // Strip it out of state so we don't send it again
+        const newState = { ...ratchetState };
+        delete newState.initializationPayload;
+        ratchetState = newState;
+      }
 
-      const result = await encryptWithRatchetDemo(JSON.stringify(envelope), pair.send);
-      ciphertext = result.ciphertext;
-      ratchetIndex = result.ratchetIndex;
+      // Encrypt the message with our Double Ratchet state
+      const result = await encryptWithRatchetDemo(JSON.stringify(envelope), ratchetState);
 
-      // Only the send chain advances here — recv chain (for their incoming messages)
-      // is untouched, so decrypting their traffic is never affected by our own sends.
+      // In Double Ratchet, state is a single unified object. We replace the whole state.
       useKryptonStore.setState((state) => ({
         ratchetStates: {
           ...state.ratchetStates,
-          [activeContact.id]: { ...pair, send: result.newState },
+          [activeContact.id]: result.newState,
         },
       }));
+      ciphertext = result.ciphertext;
+      ratchetIndex = result.ratchetIndex;
     }
 
     const newMsg: KryptonMessage = {
@@ -208,13 +257,17 @@ export default function ChatWindow() {
       sender: keys.kryptonId,
       recipient: activeContact.id,
       type: 'ONION_ROUTED',
+      ...(initPayload ? { initializationPayload: initPayload } : {}),
       encryptedPayload: ciphertext,
       decryptedPayload: userText,
       metadataStripped: true,
       routePath: ['p2p-relay'],
-      ...(isCryptoTransfer && { isCryptoTransfer, transferAmount: amount, transferSymbol: symbol }),
-      ...(ratchetIndex !== undefined && { ratchetIndex }),
-      ...(selfDestructTTL && { selfDestructTTL }),
+      ...(ratchetIndex !== undefined ? { ratchetIndex } : {}),
+      ...(isCryptoTransfer ? { isCryptoTransfer } : {}),
+      ...(typeof amount === 'number' && isCryptoTransfer ? { transferAmount: amount } : {}),
+      ...(typeof symbol === 'string' && isCryptoTransfer ? { transferSymbol: symbol } : {}),
+      ...(selfDestructTTL ? { selfDestructTTL } : {}),
+      ...(currentAttachment ? { attachment: currentAttachment } : {}),
     };
 
     addMessage(newMsg);
@@ -599,6 +652,26 @@ export default function ChatWindow() {
                               : msg.payload.slice(0, 16)}
                             ...
                           </p>
+                          {msg.attachment && (
+                            <div className="mt-2 mb-2 rounded overflow-hidden">
+                              {msg.attachment.mimeType.startsWith('image/') ? (
+                                <img src={msg.attachment.data} alt={msg.attachment.filename} className="max-w-full rounded" />
+                              ) : (
+                                <a
+                                  href={msg.attachment.data}
+                                  download={msg.attachment.filename}
+                                  className="flex items-center space-x-2 bg-black/20 p-3 rounded-lg border border-white/10 hover:bg-black/30 transition"
+                                >
+                                  <svg className="w-6 h-6 text-blue-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg>
+                                  <div className="flex flex-col flex-1 overflow-hidden min-w-0">
+                                    <span className="text-sm font-medium truncate">{msg.attachment.filename}</span>
+                                    <span className="text-[10px] opacity-70">{Math.round(msg.attachment.size / 1024)} KB</span>
+                                  </div>
+                                  <svg className="w-5 h-5 opacity-70 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                                </a>
+                              )}
+                            </div>
+                          )}
                           <p className="opacity-95 leading-relaxed whitespace-pre-wrap text-sm">
                             {msg.decryptedPayload}
                           </p>
@@ -662,7 +735,23 @@ export default function ChatWindow() {
             </div>
 
             {/* Input Area */}
-            <div className="p-4 border-t border-[rgba(48,54,61,0.5)] bg-[rgba(22,27,34,0.6)]">
+            <div className="p-4 border-t border-[rgba(48,54,61,0.5)] bg-[rgba(22,27,34,0.6)] flex flex-col">
+              {attachment && (
+                <div className="mb-3 bg-[#161b22] border border-gray-700 rounded-lg p-2.5 flex items-center justify-between shadow-inner">
+                  <div className="flex items-center space-x-3 text-sm text-gray-300">
+                    {attachment.mimeType.startsWith('image/') ? (
+                      <img src={attachment.data} alt="preview" className="w-8 h-8 object-cover rounded" />
+                    ) : (
+                      <svg className="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" /></svg>
+                    )}
+                    <span className="truncate max-w-[200px] font-medium">{attachment.filename}</span>
+                    <span className="text-xs text-gray-500">({Math.round(attachment.size / 1024)} KB)</span>
+                  </div>
+                  <button onClick={() => setAttachment(null)} className="text-gray-500 hover:text-red-400 p-1 bg-white/5 rounded-full transition-colors">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                  </button>
+                </div>
+              )}
               <div className="flex items-center bg-[#0d1117] border border-gray-700 rounded-xl p-2 shadow-inner focus-within:border-[#58a6ff] transition-colors">
                 {/* Transfer Crypto Button (ADAMANT Style) */}
                 <button
@@ -682,11 +771,29 @@ export default function ChatWindow() {
                 </button>
 
                 <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+                
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={activeContact.isAi}
+                  className="p-2 text-gray-400 hover:text-blue-400 transition-colors disabled:opacity-30 disabled:hover:text-gray-400 ml-1"
+                  title="Attach File (Max 1MB)"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                  </svg>
+                </button>
+
+                <input
                   type="text"
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                  className="flex-1 bg-transparent outline-none px-3 text-gray-200 text-sm placeholder-gray-500"
+                  className="flex-1 bg-transparent outline-none px-3 text-gray-200 text-sm placeholder-gray-500 ml-2"
                   placeholder={`Message ${activeContact.name}...`}
                 />
 

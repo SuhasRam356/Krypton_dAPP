@@ -12,7 +12,7 @@ import {
   generateKryptonIdentity,
   type KryptonKeys,
 } from '@/crypto/keys';
-import type { RatchetState } from '@/crypto/encryption';
+import type { DoubleRatchetState } from '@/crypto/ratchet';
 import type { StateCreator } from 'zustand';
 import type { KryptonStore } from '../useKryptonStore';
 
@@ -23,9 +23,23 @@ export interface CryptoSlice {
   generateKeys: () => void;
   loadKeysFromMnemonic: (mnemonic: string) => void;
 
-  /** Per-contact send/recv ratchet pairs, keyed by contact Krypton ID. */
-  ratchetStates: Record<string, { send: RatchetState; recv: RatchetState }>;
+  /** Per-contact Double Ratchet state, keyed by contact Krypton ID. */
+  ratchetStates: Record<string, DoubleRatchetState>;
+  
+  /** Locally stored PreKey bundle private keys */
+  localPreKeys: {
+    signedPreKeyPrivate?: string; // hex
+    kyberPrivateKey?: string; // hex
+  } | null;
+
   initRatchetForContact: (contactId: string) => Promise<void>;
+  
+  /** Init as recipient using incoming initialization payload */
+  initRatchetFromPayload: (
+    contactId: string, 
+    theirIdentityKey: string,
+    payload: { ephemeralPublicKey: string; kyberCiphertext?: string }
+  ) => Promise<DoubleRatchetState | null>;
 
   /** Publish a PreKey bundle to the Gun network for offline session establishment */
   publishPreKeys: () => Promise<void>;
@@ -73,6 +87,7 @@ export const createCryptoSlice: StateCreator<KryptonStore, [], [], CryptoSlice> 
   },
 
   ratchetStates: {},
+  localPreKeys: null,
 
   initRatchetForContact: async (contactId: string) => {
     const { keys, ratchetStates } = get();
@@ -86,11 +101,11 @@ export const createCryptoSlice: StateCreator<KryptonStore, [], [], CryptoSlice> 
       const { getGun } = await import('@/crypto/network');
       
       const preKeyBundle = await fetchPreKeysFromGun(contactId, getGun() as any);
-      let pair;
+      let ratchetState;
 
       if (preKeyBundle) {
         const { initContactRatchetWithPreKey } = await import('@/crypto/encryption');
-        pair = await initContactRatchetWithPreKey(
+        ratchetState = await initContactRatchetWithPreKey(
           keys.messagingPrivateKey,
           preKeyBundle,
           keys.kryptonId,
@@ -100,7 +115,7 @@ export const createCryptoSlice: StateCreator<KryptonStore, [], [], CryptoSlice> 
       } else {
         // Fallback to basic ECDH if no PreKey bundle is found
         const theirPublicKey = fromHex(contactId);
-        pair = await initContactRatchet(
+        ratchetState = await initContactRatchet(
           keys.messagingPrivateKey,
           theirPublicKey,
           keys.kryptonId,
@@ -110,10 +125,67 @@ export const createCryptoSlice: StateCreator<KryptonStore, [], [], CryptoSlice> 
       }
 
       set((state) => ({
-        ratchetStates: { ...state.ratchetStates, [contactId]: pair },
+        ratchetStates: { ...state.ratchetStates, [contactId]: ratchetState },
       }));
     } catch (error) {
       console.error('Failed to init ratchet:', error);
+    }
+  },
+
+  initRatchetFromPayload: async (contactId, theirIdentityKey, payload) => {
+    const { keys, localPreKeys } = get();
+    if (!keys) return null;
+
+    try {
+      const { computeRecipientSharedSecret } = await import('@/crypto/prekeys');
+      const { initDoubleRatchet } = await import('@/crypto/ratchet');
+      const { fromHex } = await import('@/crypto/keys');
+
+      // Use local prekeys or fallback to dummy/empty if we lost them? We MUST have them for Kyber.
+      // But for ECDH fallback, maybe they are empty.
+      const myIdentityPrivateKey = keys.messagingPrivateKey;
+      
+      // We re-derive the signed prekey private key if it's missing in localPreKeys
+      const sodium = (await import('libsodium-wrappers')).default;
+      await sodium.ready;
+      
+      let signedPreKeyPrivate: Uint8Array;
+      if (localPreKeys?.signedPreKeyPrivate) {
+        signedPreKeyPrivate = fromHex(localPreKeys.signedPreKeyPrivate);
+      } else {
+        const preKeySeed = sodium.crypto_generichash(
+          32,
+          sodium.from_string('signed-prekey-seed-v1'),
+          myIdentityPrivateKey
+        );
+        signedPreKeyPrivate = sodium.crypto_box_seed_keypair(preKeySeed).privateKey;
+      }
+
+      const theirIdentityKeyBytes = fromHex(theirIdentityKey);
+      const theirEphemeralKeyBytes = fromHex(payload.ephemeralPublicKey);
+      
+      const kyberPriv = localPreKeys?.kyberPrivateKey ? fromHex(localPreKeys.kyberPrivateKey) : undefined;
+      const kyberCiph = payload.kyberCiphertext ? fromHex(payload.kyberCiphertext) : undefined;
+
+      const sharedSecret = await computeRecipientSharedSecret(
+        myIdentityPrivateKey,
+        signedPreKeyPrivate,
+        theirIdentityKeyBytes,
+        theirEphemeralKeyBytes,
+        kyberPriv,
+        kyberCiph
+      );
+
+      // isAlice is FALSE because we are the receiver (Bob)
+      const state = await initDoubleRatchet(sharedSecret, contactId, theirEphemeralKeyBytes, false);
+      
+      set((s) => ({
+        ratchetStates: { ...s.ratchetStates, [contactId]: state },
+      }));
+      return state;
+    } catch (e) {
+      console.error('Failed to init ratchet from payload:', e);
+      return null;
     }
   },
 
@@ -128,6 +200,12 @@ export const createCryptoSlice: StateCreator<KryptonStore, [], [], CryptoSlice> 
       const bundle = await generatePreKeyBundle(keys.messagingPublicKey, keys.messagingPrivateKey);
       const publishedBundle = toPublishedBundle(bundle);
       
+      const localPreKeys: { signedPreKeyPrivate?: string; kyberPrivateKey?: string } = {};
+      if (bundle.signedPreKeyPrivate) localPreKeys.signedPreKeyPrivate = bundle.signedPreKeyPrivate;
+      if (bundle.kyberPrivateKey) localPreKeys.kyberPrivateKey = bundle.kyberPrivateKey;
+      
+      set({ localPreKeys });
+
       publishPreKeysToGun(keys.kryptonId, publishedBundle, getGun() as any);
       console.log('PreKeys published to Gun network');
     } catch (error) {

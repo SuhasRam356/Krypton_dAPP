@@ -24,6 +24,8 @@ export interface PreKeyBundle {
   signedPreKeyPrivate?: string; // hex-encoded private key (local-only, never published)
   oneTimePreKeys: string[]; // hex-encoded one-time Curve25519 public keys
   oneTimePreKeyPrivates?: string[]; // hex-encoded private keys (local-only)
+  kyberPublicKey?: string; // hex-encoded Kyber768 ML-KEM public key
+  kyberPrivateKey?: string; // hex-encoded Kyber768 ML-KEM private key
   timestamp: number;
 }
 
@@ -32,6 +34,7 @@ export interface PublishedPreKeyBundle {
   signedPreKey: string;
   signedPreKeySignature: string;
   oneTimePreKeys: string[];
+  kyberPublicKey?: string;
   timestamp: number;
 }
 
@@ -84,7 +87,6 @@ export async function generatePreKeyBundle(
   ]);
   const signature = sodium.crypto_generichash(64, signatureInput, messagingPrivateKey);
 
-  // Generate one-time PreKeys
   const oneTimePreKeys: string[] = [];
   const oneTimePreKeyPrivates: string[] = [];
   for (let i = 0; i < oneTimeKeyCount; i++) {
@@ -93,6 +95,10 @@ export async function generatePreKeyBundle(
     oneTimePreKeyPrivates.push(toHex(otkp.privateKey));
   }
 
+  // Generate Kyber ML-KEM Keypair
+  const kyber = await import('crystals-kyber');
+  const [kyberPk, kyberSk] = kyber.KeyGen768();
+
   return {
     identityKey: toHex(messagingPublicKey),
     signedPreKey: toHex(signedPreKeyPair.publicKey),
@@ -100,6 +106,8 @@ export async function generatePreKeyBundle(
     signedPreKeyPrivate: toHex(signedPreKeyPair.privateKey),
     oneTimePreKeys,
     oneTimePreKeyPrivates,
+    kyberPublicKey: toHex(new Uint8Array(kyberPk as Buffer)),
+    kyberPrivateKey: toHex(new Uint8Array(kyberSk as Buffer)),
     timestamp: Date.now(),
   };
 }
@@ -123,13 +131,17 @@ export async function verifyPreKeyBundle(bundle: PublishedPreKeyBundle): Promise
  * Strip private keys from a bundle before publishing to the network.
  */
 export function toPublishedBundle(bundle: PreKeyBundle): PublishedPreKeyBundle {
-  return {
+  const published: PublishedPreKeyBundle = {
     identityKey: bundle.identityKey,
     signedPreKey: bundle.signedPreKey,
     signedPreKeySignature: bundle.signedPreKeySignature,
     oneTimePreKeys: bundle.oneTimePreKeys,
     timestamp: bundle.timestamp,
   };
+  if (bundle.kyberPublicKey) {
+    published.kyberPublicKey = bundle.kyberPublicKey;
+  }
+  return published;
 }
 
 /**
@@ -144,42 +156,134 @@ export function toPublishedBundle(bundle: PreKeyBundle): PublishedPreKeyBundle {
  * additional forward secrecy.
  */
 export async function computePreKeySharedSecret(
-  myPrivateKey: Uint8Array,
+  myIdentityPrivateKey: Uint8Array,
   theirIdentityKey: Uint8Array,
   theirSignedPreKey: Uint8Array,
-  theirOneTimePreKey?: Uint8Array
+  theirOneTimePreKey?: Uint8Array,
+  theirKyberPublicKey?: Uint8Array
+): Promise<{ sharedSecret: Uint8Array; ephemeralPublicKey: Uint8Array; kyberCiphertext?: Uint8Array }> {
+  await sodium.ready;
+
+  // Generate our Ephemeral Keypair (EK_A)
+  const ephemeralKeyPair = sodium.crypto_box_keypair();
+  const ekA_priv = ephemeralKeyPair.privateKey;
+  const ekA_pub = ephemeralKeyPair.publicKey;
+
+  // DH1: IK_A ↔ SPK_B
+  const dh1 = sodium.crypto_scalarmult(myIdentityPrivateKey, theirSignedPreKey);
+
+  // DH2: EK_A ↔ IK_B
+  const dh2 = sodium.crypto_scalarmult(ekA_priv, theirIdentityKey);
+
+  // DH3: EK_A ↔ SPK_B
+  const dh3 = sodium.crypto_scalarmult(ekA_priv, theirSignedPreKey);
+
+  let combinedDH = new Uint8Array(dh1.length + dh2.length + dh3.length);
+  combinedDH.set(dh1);
+  combinedDH.set(dh2, dh1.length);
+  combinedDH.set(dh3, dh1.length + dh2.length);
+
+  // DH4: EK_A ↔ OPK_B (if available)
+  if (theirOneTimePreKey) {
+    const dh4 = sodium.crypto_scalarmult(ekA_priv, theirOneTimePreKey);
+    const newCombined = new Uint8Array(combinedDH.length + dh4.length);
+    newCombined.set(combinedDH);
+    newCombined.set(dh4, combinedDH.length);
+    combinedDH = newCombined;
+  }
+
+  // PQXDH: ML-KEM Encapsulation
+  let kyberCiphertext: Uint8Array | undefined;
+  if (theirKyberPublicKey) {
+    const kyber = await import('crystals-kyber');
+    // Ensure we use Buffer
+    const pkBuf = Buffer.from(theirKyberPublicKey);
+    const [c, ss] = kyber.Encrypt768(pkBuf);
+    
+    kyberCiphertext = new Uint8Array(c as Buffer);
+    const kyberSecret = new Uint8Array(ss as Buffer);
+
+    const newCombined = new Uint8Array(combinedDH.length + kyberSecret.length);
+    newCombined.set(combinedDH);
+    newCombined.set(kyberSecret, combinedDH.length);
+    combinedDH = newCombined;
+  }
+
+  // HKDF-like derivation
+  const salt = sodium.from_string('krypton-x3dh-pqxdh-v1');
+  const sharedSecret = sodium.crypto_generichash(32, combinedDH, salt);
+
+  const result: {
+    sharedSecret: Uint8Array;
+    ephemeralPublicKey: Uint8Array;
+    kyberCiphertext?: Uint8Array;
+  } = { sharedSecret, ephemeralPublicKey: ekA_pub };
+  if (kyberCiphertext) {
+    result.kyberCiphertext = kyberCiphertext;
+  }
+  return result;
+}
+
+/**
+ * Compute the X3DH + PQXDH shared secret as the Recipient (Bob).
+ */
+export async function computeRecipientSharedSecret(
+  myIdentityPrivateKey: Uint8Array,
+  mySignedPreKeyPrivate: Uint8Array,
+  theirIdentityKey: Uint8Array,
+  theirEphemeralPublicKey: Uint8Array,
+  kyberPrivateKey?: Uint8Array,
+  kyberCiphertext?: Uint8Array,
+  myOneTimePreKeyPrivate?: Uint8Array
 ): Promise<Uint8Array> {
   await sodium.ready;
 
-  // Re-derive my own deterministic signed PreKey private key
-  const preKeySeed = sodium.crypto_generichash(
-    32,
-    sodium.from_string('signed-prekey-seed-v1'),
-    myPrivateKey
-  );
-  const mySignedPreKeyPair = sodium.crypto_box_seed_keypair(preKeySeed);
-  const mySignedPreKeyPrivate = mySignedPreKeyPair.privateKey;
+  // DH1: IK_A ↔ SPK_B -> EK_A ↔ SPK_B is DH3, wait.
+  // Sender DH:
+  // DH1: IK_A ↔ SPK_B
+  // DH2: EK_A ↔ IK_B
+  // DH3: EK_A ↔ SPK_B
+  // DH4: EK_A ↔ OPK_B
 
-  // DH1: my long-term ↔ their long-term
-  const dh1 = sodium.crypto_scalarmult(myPrivateKey, theirIdentityKey);
-
-  // DH2: my long-term ↔ their signed PreKey
-  const dh2 = sodium.crypto_scalarmult(myPrivateKey, theirSignedPreKey);
-
-  // DH3: my signed PreKey ↔ their long-term
-  const dh3 = sodium.crypto_scalarmult(mySignedPreKeyPrivate, theirIdentityKey);
-
-  // Because Alice's DH2 is Bob's DH3 and vice versa, we sort the DH outputs
-  // lexicographically to ensure both parties combine them in the exact same order.
-  const hex1 = toHex(dh1);
-  const hex2 = toHex(dh2);
-  const hex3 = toHex(dh3);
+  // Receiver DH:
+  // DH1: IK_A ↔ SPK_B => Bob uses mySignedPreKeyPrivate ↔ theirIdentityKey
+  const dh1 = sodium.crypto_scalarmult(mySignedPreKeyPrivate, theirIdentityKey);
   
-  const sortedHex = [hex1, hex2, hex3].sort().join('');
-  const combinedDH = fromHex(sortedHex);
+  // DH2: EK_A ↔ IK_B => Bob uses myIdentityPrivateKey ↔ theirEphemeralPublicKey
+  const dh2 = sodium.crypto_scalarmult(myIdentityPrivateKey, theirEphemeralPublicKey);
+  
+  // DH3: EK_A ↔ SPK_B => Bob uses mySignedPreKeyPrivate ↔ theirEphemeralPublicKey
+  const dh3 = sodium.crypto_scalarmult(mySignedPreKeyPrivate, theirEphemeralPublicKey);
 
-  // HKDF-like derivation: hash the sorted, concatenated DH outputs
-  const salt = sodium.from_string('krypton-prekey-secret-v1');
+  let combinedDH = new Uint8Array(dh1.length + dh2.length + dh3.length);
+  combinedDH.set(dh1);
+  combinedDH.set(dh2, dh1.length);
+  combinedDH.set(dh3, dh1.length + dh2.length);
+
+  // DH4: EK_A ↔ OPK_B => Bob uses myOneTimePreKeyPrivate ↔ theirEphemeralPublicKey
+  if (myOneTimePreKeyPrivate) {
+    const dh4 = sodium.crypto_scalarmult(myOneTimePreKeyPrivate, theirEphemeralPublicKey);
+    const newCombined = new Uint8Array(combinedDH.length + dh4.length);
+    newCombined.set(combinedDH);
+    newCombined.set(dh4, combinedDH.length);
+    combinedDH = newCombined;
+  }
+
+  // PQXDH
+  if (kyberPrivateKey && kyberCiphertext) {
+    const kyber = await import('crystals-kyber');
+    const skBuf = Buffer.from(kyberPrivateKey);
+    const cBuf = Buffer.from(kyberCiphertext);
+    const ss = kyber.Decrypt768(cBuf, skBuf);
+    
+    const kyberSecret = new Uint8Array(ss as Buffer);
+    const newCombined = new Uint8Array(combinedDH.length + kyberSecret.length);
+    newCombined.set(combinedDH);
+    newCombined.set(kyberSecret, combinedDH.length);
+    combinedDH = newCombined;
+  }
+
+  const salt = sodium.from_string('krypton-x3dh-pqxdh-v1');
   return sodium.crypto_generichash(32, combinedDH, salt);
 }
 

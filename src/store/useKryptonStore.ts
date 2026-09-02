@@ -13,7 +13,7 @@ import { persist } from 'zustand/middleware';
 import { decryptVault, encryptVault, getVaultKey } from '@/crypto/vault';
 import type { KryptonMessage, Contact, WalletState } from '@/types';
 import type { KryptonKeys } from '@/crypto/keys';
-import type { RatchetState } from '@/crypto/encryption';
+
 
 import { createCryptoSlice, mergeAiContact, type CryptoSlice } from './slices/createCryptoSlice';
 import { createMessageSlice, type MessageSlice } from './slices/createMessageSlice';
@@ -36,6 +36,7 @@ type PersistedKryptonState = Pick<
   | 'contacts'
   | 'walletState'
   | 'ratchetStates'
+  | 'localPreKeys'
   | 'offlineQueue'
   | 'selfDestructTTL'
 >;
@@ -63,8 +64,9 @@ function sanitizePersistedState(
       contacts: mergeAiContact(Array.isArray(persisted.contacts) ? persisted.contacts : []),
       walletState: persisted.walletState ?? null,
       ratchetStates: isRecord(persisted.ratchetStates)
-        ? (persisted.ratchetStates as Record<string, { send: RatchetState; recv: RatchetState }>)
+        ? (persisted.ratchetStates as Record<string, import('@/crypto/ratchet').DoubleRatchetState>)
         : {},
+      localPreKeys: isRecord(persisted.localPreKeys) ? (persisted.localPreKeys as any) : null,
       offlineQueue: Array.isArray(persisted.offlineQueue)
         ? (persisted.offlineQueue as KryptonMessage[])
         : [],
@@ -94,6 +96,7 @@ export const useKryptonStore = create<KryptonStore>()(
         contacts: mergeAiContact(state.contacts),
         walletState: state.walletState,
         ratchetStates: state.ratchetStates,
+        localPreKeys: state.localPreKeys,
         offlineQueue: state.offlineQueue,
         selfDestructTTL: state.selfDestructTTL,
       }),

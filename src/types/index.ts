@@ -33,6 +33,18 @@ export type BaseMessage = {
 
   // ── Forward Secrecy Demo Ratchet ──
   ratchetIndex?: number; // Which ratchet step this message was encrypted under
+  initializationPayload?: {
+    ephemeralPublicKey: string; // hex
+    kyberCiphertext?: string; // hex
+  };
+
+  // ── Encrypted File Attachments ──
+  attachment?: {
+    data: string; // Base64 Data URL
+    filename: string;
+    mimeType: string;
+    size: number;
+  };
 };
 
 // Discriminated union for message types
@@ -63,6 +75,16 @@ export type MessageEnvelope = {
   transferAmount?: number;
   transferSymbol?: string;
   selfDestructTTL?: number;
+  attachment?: {
+    data: string;
+    filename: string;
+    mimeType: string;
+    size: number;
+  };
+  initializationPayload?: {
+    ephemeralPublicKey: string; // hex
+    kyberCiphertext?: string; // hex
+  };
 };
 
 // ── Control messages (encrypted on the wire, not displayed in chat) ──
