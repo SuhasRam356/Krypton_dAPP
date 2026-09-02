@@ -132,6 +132,18 @@ export default function Dashboard() {
 
   // Subscribe to Gun peer events
   useEffect(() => {
+    // Seed the map with current relay state so peers that connected before
+    // the Dashboard mounted are shown correctly.
+    if (isRelayConnected) {
+      setActivePeers((prev) => {
+        const next = new Map(prev);
+        for (const url of getPeers()) {
+          next.set(url, 'connected');
+        }
+        return next;
+      });
+    }
+
     const unsub = onPeerEvent((evt) => {
       setPeerEvents((prev) => [...prev, evt]);
       setActivePeers((prev) => {
@@ -141,7 +153,7 @@ export default function Dashboard() {
       });
     });
     return unsub;
-  }, []);
+  }, [isRelayConnected]);
 
   useEffect(() => {
     const interval = window.setInterval(() => setNow(Date.now()), 1000);

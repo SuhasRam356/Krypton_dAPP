@@ -27,7 +27,6 @@ import {
 import {
   decryptFromContact,
   decryptWithRatchetDemo,
-  initContactRatchet,
 } from '@/crypto/encryption';
 import { isValidKryptonId, fromHex } from '@/crypto/keys';
 import type { KryptonStore } from '../useKryptonStore';
@@ -215,12 +214,25 @@ export const createNetworkSlice: StateCreator<KryptonStore, [], [], NetworkSlice
       handleLegacyControlMessage(controlMessage);
     };
 
+    // Track message IDs we've already processed to prevent Gun replays
+    // from consuming ratchet keys (Gun fires .on() for ALL data in a node).
+    const seenMessageIds = new Set<string>();
+
     const handleIncomingOnionMessage = async (incomingMessage: OnionRoutedMessage) => {
       if (
         !isValidKryptonId(incomingMessage.sender) ||
         incomingMessage.recipient !== keys.kryptonId
       )
         return;
+
+      // Deduplicate: Gun replays all messages when .map().on() fires
+      if (seenMessageIds.has(incomingMessage.id)) return;
+      // Also skip messages already in the store (e.g. from a previous session)
+      if (get().messages.some((m) => m.id === incomingMessage.id)) {
+        seenMessageIds.add(incomingMessage.id);
+        return;
+      }
+      seenMessageIds.add(incomingMessage.id);
 
       const { contacts, addMessage, addContact } = get();
       const senderContact = contacts.find((contact) => contact.id === incomingMessage.sender);
@@ -238,12 +250,13 @@ export const createNetworkSlice: StateCreator<KryptonStore, [], [], NetworkSlice
         if (typeof incomingMessage.ratchetIndex === 'number') {
           let pair = get().ratchetStates[incomingMessage.sender];
           if (!pair) {
-            pair = await initContactRatchet(
-              keys.messagingPrivateKey,
-              senderPublicKey,
-              keys.kryptonId,
-              incomingMessage.sender
-            );
+            // Use the same PreKey-aware init path as the sender
+            await get().initRatchetForContact(incomingMessage.sender);
+            pair = get().ratchetStates[incomingMessage.sender];
+          }
+
+          if (!pair) {
+            throw new Error('Could not establish ratchet session with sender');
           }
 
           const result = await decryptWithRatchetDemo(
