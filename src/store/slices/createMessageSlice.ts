@@ -178,10 +178,23 @@ export const createMessageSlice: StateCreator<KryptonStore, [], [], MessageSlice
 
   clearMessages: () => set({ messages: [] }),
 
-  deleteMessage: (id: string) =>
+  deleteMessage: (id: string) => {
+    const { messages, keys } = get();
+    const message = messages.find((m) => m.id === id);
+    if (!message || !keys) return;
+
     set((state) => ({
-      messages: state.messages.filter((message) => message.id !== id),
-    })),
+      messages: state.messages.filter((m) => m.id !== id),
+    }));
+
+    // Explicit P2P scrubbing
+    // If sent message: acts as a silent unsend for unread messages.
+    // If received message: cleans up our own inbox if it wasn't auto-scrubbed.
+    const targetNode = message.sender === keys.kryptonId ? message.recipient : keys.kryptonId;
+    void deleteFromNetwork(targetNode, message.id, message.timestamp).catch((err) => {
+      console.error('Failed to scrub message from P2P node during deletion:', err);
+    });
+  },
 
   unsendMessage: (id: string) => {
     const { messages, keys } = get();

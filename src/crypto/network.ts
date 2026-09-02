@@ -339,3 +339,20 @@ export const deleteFromNetwork = async (
   const nodeKey = await inboxNodeKey(recipientKryptonId, dateBucket);
   (gun.get(nodeKey).get(messageId) as any).put(null);
 };
+
+/**
+ * Utility to allow local clients to request the relay nodes to drop entire old time-buckets.
+ * Provides a second layer of defense against unbounded storage growth on the P2P nodes
+ * if a user was offline for an extended period and messages were never consumed.
+ */
+export const cleanupOldBuckets = async (recipientKryptonId: string, daysOld: number = 2): Promise<void> => {
+  const gun = getGun();
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - daysOld);
+  
+  const dateBucket = d.toISOString().slice(0, 10);
+  const nodeKey = await inboxNodeKey(recipientKryptonId, dateBucket);
+  
+  // Explicitly tombstone the entire inbox node for that older day
+  (gun.get(nodeKey) as any).put(null);
+};

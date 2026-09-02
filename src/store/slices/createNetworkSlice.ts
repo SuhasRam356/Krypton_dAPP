@@ -23,6 +23,8 @@ import {
   onConnectivityChange,
   sendToNetwork,
   subscribeToInbox,
+  deleteFromNetwork,
+  cleanupOldBuckets,
 } from '@/crypto/network';
 import {
   decryptFromContact,
@@ -176,7 +178,14 @@ export const createNetworkSlice: StateCreator<KryptonStore, [], [], NetworkSlice
 
     stopConnectivityListener = onConnectivityChange((connected) => {
       set({ isRelayConnected: connected });
-      if (connected) get().flushOfflineQueue();
+      if (connected) {
+        get().flushOfflineQueue();
+        
+        // As a background cleanup, ask the network to drop our old time-buckets
+        void cleanupOldBuckets(keys.kryptonId, 2).catch((err) => {
+          console.error('Failed to run bucket cleanup:', err);
+        });
+      }
     });
 
     const handleLegacyControlMessage = (controlMessage: ControlMessage) => {
@@ -212,6 +221,12 @@ export const createNetworkSlice: StateCreator<KryptonStore, [], [], NetworkSlice
         return;
 
       handleLegacyControlMessage(controlMessage);
+
+      // --- AUTO-SCRUBBING ---
+      // Once successfully processed, permanently delete the control message from the P2P network.
+      void deleteFromNetwork(keys.kryptonId, incomingMessage.id, incomingMessage.timestamp).catch((err) => {
+        console.error('Failed to scrub control message from network after receipt:', err);
+      });
     };
 
     // Track message IDs we've already processed to prevent Gun replays
@@ -348,6 +363,13 @@ export const createNetworkSlice: StateCreator<KryptonStore, [], [], NetworkSlice
       };
 
       addMessage(message);
+
+      // --- AUTO-SCRUBBING ---
+      // Once successfully processed, permanently delete the message from the P2P network.
+      // This prevents P2P inboxes from acting as a permanent storage layer.
+      void deleteFromNetwork(keys.kryptonId, incomingMessage.id, incomingMessage.timestamp).catch((err) => {
+        console.error('Failed to scrub message from network after receipt:', err);
+      });
     };
 
     stopInboxSubscription = subscribeToInbox(
